@@ -720,18 +720,34 @@ app.post('/api/agent/outbound-call', async (req, res) => {
     if (!volunteer) return res.status(200).json({ success: false, error: { code: 'NOT_FOUND', message: 'Volunteer not found' } });
 
     const dialNumber = to_number || volunteer.phone_number;
+
+    // Dynamically build the prompt for this specific volunteer call
+    const senior = conv.senior_id ? await prisma.senior.findUnique({ where: { id: conv.senior_id } }) : null;
+    const seniorName = senior ? `${senior.first_name ?? ''} ${senior.last_name ?? ''}`.trim() : 'a senior';
+    
+    const systemMessage = [
+      'You are the CareShare assistant calling a volunteer.',
+      `You are calling on behalf of ${seniorName}.`,
+      `The specific request is: "${conv.request_details}".`,
+      'Your goal is to clearly explain the task and ask if they are available and willing to help. Be clear and concise.',
+      'You MUST record the result with logVolunteerCall before finishing.'
+    ].join(' ');
+    const firstMessage = `Hello, this is CareShare calling on behalf of ${seniorName} with a volunteer opportunity.`;
+
     const url = 'https://api.elevenlabs.io/v1/convai/twilio/outbound-call';
     const payload = {
       agent_id: agentId,
       agent_phone_number_id: phoneNumberId,
       to_number: dialNumber,
-      conversation_initiation_client_data: {
-        conversation_id: conv.id,
-        volunteer_id: volunteer.id,
-        mode: 'VOLUNTEER_OUTBOUND',
+      conversation_config_override: {
+        agent: {
+          prompt: { prompt: systemMessage },
+          first_message: firstMessage,
+          language: 'en',
+        },
       },
     };
-    console.log('[XI] outbound-call -> request', { url, payload, headers: { 'xi-api-key': `***${String(xiApiKey).slice(-4)}` } });
+    console.log('[XI] outbound-call -> request', { url, payload: { ...payload, conversation_config_override: '...' }, headers: { 'xi-api-key': `***${String(xiApiKey).slice(-4)}` } });
     const response = await fetch(url, {
       method: 'POST',
       headers: { 'xi-api-key': xiApiKey as string, 'Content-Type': 'application/json' },
@@ -793,18 +809,29 @@ app.post('/api/agent/outbound-callback-senior', async (req, res) => {
     if (!s) return res.status(200).json({ success: false, error: { code: 'NOT_FOUND', message: 'Senior not found' } });
     const dialNumber = to_number || s.phone_number;
 
+    // Dynamically build prompt for senior callback
+    const systemMessage = [
+      'You are calling a senior back with results.',
+      `You are calling ${s.first_name ?? 'the senior'}.`,
+      'Your goal is to present the volunteers who have accepted the task and let the senior choose one.',
+      'You MUST use the getAcceptedVolunteers tool first.',
+    ].join(' ');
+    const firstMessage = `Hello ${s.first_name ?? ''}, this is CareShare calling you back with an update on your request.`;
+
     const url = 'https://api.elevenlabs.io/v1/convai/twilio/outbound-call';
     const payload = {
       agent_id: agentId,
       agent_phone_number_id: phoneNumberId,
       to_number: dialNumber,
-      conversation_initiation_client_data: {
-        conversation_id: c.id,
-        senior_id: s.id,
-        mode: 'SENIOR_CALLBACK',
+      conversation_config_override: {
+        agent: {
+          prompt: { prompt: systemMessage },
+          first_message: firstMessage,
+          language: 'en',
+        },
       },
     };
-    console.log('[XI] outbound-callback-senior -> request', { url, payload, headers: { 'xi-api-key': `***${String(xiApiKey).slice(-4)}` } });
+    console.log('[XI] outbound-callback-senior -> request', { url, payload: { ...payload, conversation_config_override: '...' }, headers: { 'xi-api-key': `***${String(xiApiKey).slice(-4)}` } });
     const response = await fetch(url, {
       method: 'POST',
       headers: { 'xi-api-key': xiApiKey as string, 'Content-Type': 'application/json' },
