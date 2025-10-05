@@ -17,6 +17,13 @@ let libphonenumber: any;
 const app = express();
 const port = process.env.PORT || 3001;
 
+// Middleware to normalize multiple slashes into a single slash
+app.use((req, res, next) => {
+  req.url = req.url.replace(/\/+/g, '/');
+  next();
+});
+
+
 // CORS configuration
 const allowedOrigins = [
   'https://careshare-hackru-1.onrender.com',
