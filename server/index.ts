@@ -13,6 +13,16 @@ let libphonenumber: any;
   libphonenumber = await import('libphonenumber-js');
 })();
 
+// Helper: treat null/undefined/empty string as undefined for optional string fields
+const nullableString = z.preprocess((v) => {
+  if (v === null || v === undefined) return undefined;
+  if (typeof v === 'string') {
+    const t = v.trim();
+    return t.length === 0 ? undefined : t;
+  }
+  return v;
+}, z.string().optional());
+
 
 const app = express();
 const port = process.env.PORT || 3001;
@@ -123,7 +133,7 @@ app.use('/api', (req: any, res: any, next) => {
 app.get('/api/health', async (_req, res) => {
   try {
     // A simple, fast query to confirm DB connectivity
-    await pool.$queryRaw`SELECT 1`;
+    await pool.query('SELECT 1');
     res.json({ ok: true, database: 'connected' });
   } catch (e: any) {
     console.error('[health] Health check failed:', e);
@@ -326,14 +336,14 @@ app.post('/api/agent/find-volunteers', async (req, res) => {
 
 // Create or update a senior (upsert by phone)
 const upsertSeniorSchema = z.object({
-  first_name: z.string().min(1).optional(),
-  last_name: z.string().min(1).optional(),
+  first_name: nullableString,
+  last_name: nullableString,
   phone_number: z.string(),
-  email: z.string().optional(),
-  street_address: z.string().optional(),
-  city: z.string().optional(),
-  state: z.string().optional(),
-  zip_code: z.string().optional(),
+  email: nullableString,
+  street_address: nullableString,
+  city: nullableString,
+  state: nullableString,
+  zip_code: nullableString,
 });
 
 app.post('/api/agent/create-senior', async (req, res) => {
@@ -380,14 +390,14 @@ const startInboundSchema = z.object({
   caller_phone_number: z.string(),
   request_details: z.string(),
   create_if_missing: z.boolean().optional(),
-  first_name: z.string().optional(),
-  last_name: z.string().optional(),
-  email: z.string().optional(),
-  street_address: z.string().optional(),
-  city: z.string().optional(),
-  state: z.string().optional(),
-  zip_code: z.string().optional(),
-  zip: z.string().optional(),
+  first_name: nullableString,
+  last_name: nullableString,
+  email: nullableString,
+  street_address: nullableString,
+  city: nullableString,
+  state: nullableString,
+  zip_code: nullableString,
+  zip: nullableString,
   radius: z.coerce.number().int().positive().max(200).optional(),
 });
 
