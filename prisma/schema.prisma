@@ -57,6 +57,9 @@ model Appointment {
   senior                Senior   @relation(fields: [senior_id], references: [id])
   volunteer             Volunteer? @relation(fields: [volunteer_id], references: [id])
   inbound_conversation  InboundConversation?
+
+  @@index([senior_id])
+  @@index([volunteer_id])
 }
 
 model EmergencyContact {
@@ -66,6 +69,8 @@ model EmergencyContact {
   phone_number String
   relationship String
   senior      Senior @relation(fields: [senior_id], references: [id])
+
+  @@index([senior_id])
 }
 
 model CallAttempt {
@@ -78,6 +83,9 @@ model CallAttempt {
 
   senior    Senior    @relation(fields: [senior_id], references: [id], onDelete: Cascade)
   volunteer Volunteer @relation(fields: [volunteer_id], references: [id], onDelete: Cascade)
+
+  @@index([senior_id])
+  @@index([volunteer_id])
 }
 
 model InboundConversation {
@@ -95,6 +103,8 @@ model InboundConversation {
   senior                Senior?           @relation(fields: [senior_id], references: [id], onDelete: SetNull)
   scheduled_appointment Appointment?      @relation(fields: [scheduled_appointment_id], references: [id], onDelete: SetNull)
   conversation_calls    ConversationCall[]
+
+  @@index([senior_id])
 }
 
 model ConversationCall {
@@ -109,4 +119,7 @@ model ConversationCall {
 
   conversation InboundConversation @relation(fields: [conversation_id], references: [id], onDelete: Cascade)
   volunteer    Volunteer           @relation(fields: [volunteer_id], references: [id], onDelete: Cascade)
+
+  @@index([conversation_id])
+  @@index([volunteer_id])
 }

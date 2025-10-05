@@ -131,3 +131,27 @@ ALTER TABLE "ConversationCall" ADD CONSTRAINT "ConversationCall_conversation_id_
 
 -- AddForeignKey
 ALTER TABLE "ConversationCall" ADD CONSTRAINT "ConversationCall_volunteer_id_fkey" FOREIGN KEY ("volunteer_id") REFERENCES "Volunteer"("id") ON DELETE CASCADE ON UPDATE CASCADE;
+
+-- CreateIndex
+CREATE INDEX "Appointment_senior_id_idx" ON "Appointment"("senior_id");
+
+-- CreateIndex
+CREATE INDEX "Appointment_volunteer_id_idx" ON "Appointment"("volunteer_id");
+
+-- CreateIndex
+CREATE INDEX "EmergencyContact_senior_id_idx" ON "EmergencyContact"("senior_id");
+
+-- CreateIndex
+CREATE INDEX "CallAttempt_senior_id_idx" ON "CallAttempt"("senior_id");
+
+-- CreateIndex
+CREATE INDEX "CallAttempt_volunteer_id_idx" ON "CallAttempt"("volunteer_id");
+
+-- CreateIndex
+CREATE INDEX "InboundConversation_senior_id_idx" ON "InboundConversation"("senior_id");
+
+-- CreateIndex
+CREATE INDEX "ConversationCall_conversation_id_idx" ON "ConversationCall"("conversation_id");
+
+-- CreateIndex
+CREATE INDEX "ConversationCall_volunteer_id_idx" ON "ConversationCall"("volunteer_id");
