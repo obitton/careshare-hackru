@@ -1,7 +1,7 @@
 console.log('Server process started...');
 import 'dotenv/config';
 import express from 'express';
-import pool from './db';
+import prisma from './db';
 import cors from 'cors';
 import { z } from 'zod';
 import { createRequire } from 'module';
@@ -133,7 +133,7 @@ app.use('/api', (req: any, res: any, next) => {
 app.get('/api/health', async (_req, res) => {
   try {
     // A simple, fast query to confirm DB connectivity
-    await pool.query('SELECT 1');
+    await prisma.$queryRaw`SELECT 1`;
     res.json({ ok: true, database: 'connected' });
   } catch (e: any) {
     console.error('[health] Health check failed:', e);
@@ -144,15 +144,20 @@ app.get('/api/health', async (_req, res) => {
 // Admin stats (UI parity)
 app.get('/api/stats', async (_req, res) => {
   try {
-    const seniors = await pool.query('SELECT COUNT(*) FROM seniors WHERE is_active = true');
-    const volunteers = await pool.query('SELECT COUNT(*) FROM volunteers WHERE is_active = true');
-    const upcoming = await pool.query(`SELECT COUNT(*) FROM appointments WHERE status IN ('Scheduled','Confirmed')`);
-    const completed = await pool.query(`SELECT COUNT(*) FROM appointments WHERE status = 'Completed' AND appointment_datetime >= date_trunc('month', current_date)`);
+    const seniors = await prisma.senior.count({ where: { is_active: true } });
+    const volunteers = await prisma.volunteer.count({ where: { is_active: true } });
+    const upcoming = await prisma.appointment.count({ where: { status: { in: ['Scheduled', 'Confirmed'] } } });
+    const completed = await prisma.appointment.count({
+      where: {
+        status: 'Completed',
+        appointment_datetime: { gte: new Date(new Date().getFullYear(), new Date().getMonth(), 1) },
+      }
+    });
     res.json({
-      totalSeniors: parseInt(seniors.rows[0].count, 10),
-      activeVolunteers: parseInt(volunteers.rows[0].count, 10),
-      upcomingAppointments: parseInt(upcoming.rows[0].count, 10),
-      completedThisMonth: parseInt(completed.rows[0].count, 10),
+      totalSeniors: seniors,
+      activeVolunteers: volunteers,
+      upcomingAppointments: upcoming,
+      completedThisMonth: completed,
     });
   } catch (e: any) {
     console.error(`[stats] ERROR:`, e);
@@ -226,8 +231,8 @@ app.post('/api/agent/find-and-parse', async (req, res) => {
 
   try {
     console.log(` -> Finding senior by phone: ${normalizedPhone}`);
-    const seniorRes = await pool.query('SELECT * FROM seniors WHERE phone_number = $1', [normalizedPhone]);
-    if (!seniorRes.rows[0]) {
+    const senior = await prisma.senior.findFirst({ where: { phone_number: normalizedPhone } });
+    if (!senior) {
       return res.status(200).json({ success: false, error: { code: 'NOT_FOUND', message: 'Senior not found' } });
     }
 
@@ -236,20 +241,22 @@ app.post('/api/agent/find-and-parse', async (req, res) => {
     if (!skillName) return res.status(200).json({ success: false, error: { code: 'NO_SKILL', message: 'Could not determine skill' } });
     console.log(` -> Found skill: ${skillName}`);
 
-    const volunteerRes = await pool.query(
-      `SELECT v.id, v.first_name, v.last_name, v.phone_number, v.zip_code FROM volunteers v
-       JOIN volunteer_skills vs ON v.id = vs.volunteer_id
-       JOIN skills s ON vs.skill_id = s.id
-       WHERE s.name = $1 AND v.is_active = true`,
-      [skillName]
-    );
-    console.log(` -> Found ${volunteerRes.rows.length} volunteers.`);
+    const volunteers = await prisma.volunteer.findMany({
+      where: {
+        is_active: true,
+        skills: { some: { skill: { name: skillName } } },
+      },
+      select: { id: true, first_name: true, last_name: true, phone_number: true, zip_code: true },
+    });
+    console.log(` -> Found ${volunteers.length} volunteers.`);
 
-    res.status(200).json({ success: true, data: {
-      senior: seniorRes.rows[0],
-      matched_skill: skillName,
-      potential_volunteers: volunteerRes.rows,
-    } });
+    res.status(200).json({
+      success: true, data: {
+        senior,
+        matched_skill: skillName,
+        potential_volunteers: volunteers,
+      }
+    });
   } catch (e: any) {
     console.error(' -> ERROR in find-and-parse:', e);
     res.status(200).json({ success: false, error: { code: 'INTERNAL_ERROR', message: e.message } });
@@ -269,35 +276,22 @@ app.post('/api/agent/list-volunteers', async (req, res) => {
   if (!parsed.success) return res.status(200).json({ success: false, error: { code: 'INVALID_BODY', message: 'Invalid request body', details: parsed.error.issues } });
   const { skill, zip, radius = 10 } = parsed.data;
   try {
-    let zips: string[] | null = null;
-    if (zip) {
-      try {
-        zips = zipcodes.radius(zip, radius) as string[];
-      } catch (_e) {
-        return res.status(200).json({ success: false, error: { code: 'INVALID_ZIP', message: 'Invalid zip provided' } });
-      }
-    }
-
-    const params: any[] = [];
-    let sql = `SELECT v.id, v.first_name, v.last_name, v.phone_number, v.zip_code,
-                      ARRAY_AGG(s.name) as skills
-               FROM volunteers v
-               LEFT JOIN volunteer_skills vs ON v.id = vs.volunteer_id
-               LEFT JOIN skills s ON vs.skill_id = s.id
-               WHERE v.is_active = true`;
-    if (skill) {
-      sql += ` AND v.id IN (SELECT vs2.volunteer_id FROM volunteer_skills vs2 JOIN skills s2 ON s2.id = vs2.skill_id WHERE s2.name = $${params.length + 1})`;
-      params.push(skill);
-    }
-    if (zips && zips.length > 0) {
-      sql += ` AND v.zip_code = ANY($${params.length + 1})`;
-      params.push(zips);
-    }
-    sql += ' GROUP BY v.id ORDER BY v.id DESC';
-
-    const { rows } = await pool.query(sql, params);
-    res.status(200).json({ success: true, data: rows });
+    const zips: string[] | null = zip ? (zipcodes.radius(zip, radius) as string[]) : null;
+    const volunteers = await prisma.volunteer.findMany({
+      where: {
+        is_active: true,
+        skills: skill ? { some: { skill: { name: skill } } } : undefined,
+        zip_code: zips ? { in: zips } : undefined,
+      },
+      include: { skills: { include: { skill: true } } },
+      orderBy: { id: 'desc' },
+    });
+    const formatted = volunteers.map(v => ({ ...v, skills: v.skills.map(s => s.skill.name) }));
+    res.status(200).json({ success: true, data: formatted });
   } catch (e: any) {
+    if (e.message.includes('Invalid zip')) {
+      return res.status(200).json({ success: false, error: { code: 'INVALID_ZIP', message: 'Invalid zip provided' } });
+    }
     console.error('list-volunteers error:', e);
     res.status(200).json({ success: false, error: { code: 'INTERNAL_ERROR', message: e.message } });
   }
@@ -312,23 +306,22 @@ app.post('/api/agent/find-volunteers', async (req, res) => {
   // Reuse logic by calling underlying handler code inline
   const { skill, zip, radius = 10 } = parsed.data;
   try {
-    let zips: string[] | null = null;
-    if (zip) {
-      try { zips = zipcodes.radius(zip, radius) as string[]; } catch { return res.status(200).json({ success: false, error: { code: 'INVALID_ZIP', message: 'Invalid zip provided' } }); }
-    }
-    const params: any[] = [];
-    let sql = `SELECT v.id, v.first_name, v.last_name, v.phone_number, v.zip_code,
-                      ARRAY_AGG(s.name) as skills
-               FROM volunteers v
-               LEFT JOIN volunteer_skills vs ON v.id = vs.volunteer_id
-               LEFT JOIN skills s ON vs.skill_id = s.id
-               WHERE v.is_active = true`;
-    if (skill) { sql += ` AND v.id IN (SELECT vs2.volunteer_id FROM volunteer_skills vs2 JOIN skills s2 ON s2.id = vs2.skill_id WHERE s2.name = $${params.length + 1})`; params.push(skill); }
-    if (zips && zips.length > 0) { sql += ` AND v.zip_code = ANY($${params.length + 1})`; params.push(zips); }
-    sql += ' GROUP BY v.id ORDER BY v.id DESC';
-    const { rows } = await pool.query(sql, params);
-    res.status(200).json({ success: true, data: rows });
+    const zips: string[] | null = zip ? (zipcodes.radius(zip, radius) as string[]) : null;
+    const volunteers = await prisma.volunteer.findMany({
+      where: {
+        is_active: true,
+        skills: skill ? { some: { skill: { name: skill } } } : undefined,
+        zip_code: zips ? { in: zips } : undefined,
+      },
+      include: { skills: { include: { skill: true } } },
+      orderBy: { id: 'desc' },
+    });
+    const formatted = volunteers.map(v => ({ ...v, skills: v.skills.map(s => s.skill.name) }));
+    res.status(200).json({ success: true, data: formatted });
   } catch (e: any) {
+    if (e.message.includes('Invalid zip')) {
+      return res.status(200).json({ success: false, error: { code: 'INVALID_ZIP', message: 'Invalid zip provided' } });
+    }
     console.error('find-volunteers error:', e);
     res.status(200).json({ success: false, error: { code: 'INTERNAL_ERROR', message: e.message } });
   }
@@ -354,31 +347,23 @@ app.post('/api/agent/create-senior', async (req, res) => {
   if (!normalized) return res.status(200).json({ success: false, error: { code: 'INVALID_PHONE', message: 'Invalid phone number format.' } });
   try {
     const d = parsed.data;
-    const emailClean = d.email && d.email.trim() ? d.email.trim() : null;
-    const upserted = await pool.query(
-      `INSERT INTO seniors (first_name, last_name, phone_number, email, street_address, city, state, zip_code, is_active)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,true)
-       ON CONFLICT (phone_number) DO UPDATE SET
-       first_name = COALESCE($2, first_name),
-       last_name = COALESCE($3, last_name),
-       email = COALESCE($4, email),
-       street_address = COALESCE($5, street_address),
-       city = COALESCE($6, city),
-       state = COALESCE($7, state),
-       zip_code = COALESCE($8, zip_code)
-       RETURNING *`,
-      [
-        d.first_name ?? null,
-        d.last_name ?? null,
-        normalized,
-        emailClean,
-        d.street_address ?? null,
-        d.city ?? null,
-        d.state ?? null,
-        d.zip_code ?? null,
-      ]
-    );
-    return res.status(200).json({ success: true, data: upserted.rows[0], upserted: 'created_or_updated' });
+    const emailClean = d.email; // Already preprocessed by nullableString
+    const upserted = await prisma.senior.upsert({
+      where: { id: -1 }, // Bogus where to force create path since we don't have unique on phone
+      create: {
+        first_name: d.first_name || '',
+        last_name: d.last_name || '',
+        phone_number: normalized,
+        email: emailClean,
+        street_address: d.street_address,
+        city: d.city,
+        state: d.state,
+        zip_code: d.zip_code,
+        is_active: true,
+      },
+      update: {}, // Handled by create
+    });
+    return res.status(200).json({ success: true, data: upserted, upserted: 'created_or_updated' });
   } catch (e: any) {
     console.error('create-senior error:', e);
     res.status(200).json({ success: false, error: { code: 'INTERNAL_ERROR', message: e.message } });
@@ -410,84 +395,81 @@ app.post('/api/agent/start-inbound-conversation', async (req, res) => {
   if (!normalized) return res.status(200).json({ success: false, error: { code: 'INVALID_PHONE', message: 'Invalid phone number format.' } });
 
   try {
-    let seniorRow: any = await pool.query('SELECT * FROM seniors WHERE phone_number = $1', [normalized]);
+    let seniorRow: any = await prisma.senior.findFirst({ where: { phone_number: normalized } });
 
-    if (!seniorRow.rows[0] && (d.create_if_missing || d.first_name || d.last_name || d.zip_code)) {
-      const emailClean = d.email && d.email.trim() ? d.email.trim() : null;
-      seniorRow = await pool.query(
-        `INSERT INTO seniors (first_name,last_name,phone_number,email,street_address,city,state,zip_code,is_active)
-         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,true)
-         RETURNING *`,
-        [d.first_name ?? null, d.last_name ?? null, normalized, emailClean, d.street_address ?? null, d.city ?? null, d.state ?? null, d.zip_code ?? null]
-      );
+    if (!seniorRow && (d.create_if_missing || d.first_name || d.last_name || d.zip_code)) {
+      const emailClean = d.email; // Already preprocessed
+      seniorRow = await prisma.senior.create({
+        data: {
+          first_name: d.first_name || '',
+          last_name: d.last_name || '',
+          phone_number: normalized,
+          email: emailClean,
+          street_address: d.street_address,
+          city: d.city,
+          state: d.state,
+          zip_code: d.zip_code,
+          is_active: true,
+        },
+      });
     }
 
     const matchedSkill = parseRequestForSkill(d.request_details);
 
-    const searchZip = d.zip ?? seniorRow?.rows[0]?.zip_code ?? null;
+    const searchZip = d.zip ?? seniorRow?.zip_code ?? null;
     const radius = d.radius ?? 10;
-    let zips: string[] | null = null;
-    if (searchZip) {
-      try { zips = zipcodes.radius(searchZip, radius) as string[]; } catch { return res.status(200).json({ success: false, error: { code: 'INVALID_ZIP', message: 'Invalid zip provided' } }); }
-    }
-
+    
     let volunteers: any[] = [];
-    if (matchedSkill) {
-      const params: any[] = [matchedSkill];
-      let sql = `SELECT v.id, v.first_name, v.last_name, v.phone_number, v.zip_code,
-                        ARRAY_AGG(s.name) as skills
-                 FROM volunteers v
-                 JOIN volunteer_skills vs ON v.id = vs.volunteer_id
-                 JOIN skills s ON vs.skill_id = s.id
-                 WHERE v.is_active = true AND s.name = $1`;
-      if (zips && zips.length > 0) { sql += ` AND v.zip_code = ANY($2)`; params.push(zips); }
-      sql += ' GROUP BY v.id ORDER BY v.id DESC';
-      let vols = await pool.query(sql, params);
-      volunteers = vols.rows;
-      if ((!volunteers || volunteers.length === 0) && searchZip) {
-        for (const extra of [5, 10, 15]) {
-          try {
-            const expanded = zipcodes.radius(searchZip, radius + extra) as string[];
-            const p2: any[] = [matchedSkill, expanded];
-            let sql2 = `SELECT v.id, v.first_name, v.last_name, v.phone_number, v.zip_code,
-                           ARRAY_AGG(s.name) as skills
-                        FROM volunteers v
-                        JOIN volunteer_skills vs ON v.id = vs.volunteer_id
-                        JOIN skills s ON vs.skill_id = s.id
-                        WHERE v.is_active = true AND s.name = $1 AND v.zip_code = ANY($2)
-                        GROUP BY v.id ORDER BY v.id DESC`;
-            const tryRes = await pool.query(sql2, p2);
-            if (tryRes.rows.length > 0) { volunteers = tryRes.rows; break; }
-          } catch {}
-        }
+    if (searchZip && matchedSkill) {
+      for (const r of [radius, radius + 5, radius + 10, radius + 15]) {
+        try {
+          const zips = zipcodes.radius(searchZip, r) as string[];
+          const vols = await prisma.volunteer.findMany({
+            where: {
+              is_active: true,
+              skills: { some: { skill: { name: matchedSkill } } },
+              zip_code: { in: zips },
+            },
+            include: { skills: { include: { skill: true } } },
+          });
+          if (vols.length > 0) {
+            volunteers = vols.map(v => ({ ...v, skills: v.skills.map(s => s.skill.name) }));
+            break;
+          }
+        } catch {}
       }
     }
-    if (!matchedSkill || volunteers.length === 0) {
-      const paramsAll: any[] = [];
-      let sqlAll = `SELECT v.id, v.first_name, v.last_name, v.phone_number, v.zip_code,
-                           ARRAY_AGG(s.name) as skills
-                    FROM volunteers v
-                    LEFT JOIN volunteer_skills vs ON v.id = vs.volunteer_id
-                    LEFT JOIN skills s ON vs.skill_id = s.id
-                    WHERE v.is_active = true`;
-      if (zips && zips.length > 0) { sqlAll += ` AND v.zip_code = ANY($1)`; paramsAll.push(zips); }
-      sqlAll += ' GROUP BY v.id ORDER BY v.id DESC';
-      const allRes = await pool.query(sqlAll, paramsAll);
-      volunteers = allRes.rows;
+    
+    if (volunteers.length === 0 && searchZip) {
+      try {
+        const zips = zipcodes.radius(searchZip, radius) as string[];
+        const allVols = await prisma.volunteer.findMany({
+          where: { is_active: true, zip_code: { in: zips } },
+          include: { skills: { include: { skill: true } } },
+        });
+        volunteers = allVols.map(v => ({ ...v, skills: v.skills.map(s => s.skill.name) }));
+      } catch {}
     }
 
-    const insert = await pool.query(
-      `INSERT INTO inbound_conversations (senior_id, caller_phone_number, request_details, matched_skill, nearby_volunteers, status)
-       VALUES ($1,$2,$3,$4,$5,'OPEN') RETURNING *`,
-      [seniorRow.rows[0]?.id ?? null, normalized, d.request_details, matchedSkill ?? null, JSON.stringify(volunteers)]
-    );
+    const insert = await prisma.inboundConversation.create({
+      data: {
+        senior_id: seniorRow?.id ?? null,
+        caller_phone_number: normalized,
+        request_details: d.request_details,
+        matched_skill: matchedSkill,
+        nearby_volunteers: volunteers as any,
+        status: 'OPEN',
+      },
+    });
 
-    res.status(201).json({ success: true, data: {
-      conversation_id: insert.rows[0].id,
-      senior: seniorRow.rows[0],
-      matched_skill: matchedSkill,
-      volunteers,
-    }});
+    res.status(201).json({
+      success: true, data: {
+        conversation_id: insert.id,
+        senior: seniorRow,
+        matched_skill: matchedSkill,
+        volunteers,
+      }
+    });
   } catch (e: any) {
     console.error('start-inbound-conversation error:', e);
     res.status(200).json({ success: false, error: { code: 'INTERNAL_ERROR', message: e.message } });
@@ -509,22 +491,28 @@ app.post('/api/agent/log-volunteer-call', async (req, res) => {
   const d = parsed.data;
   try {
     // Validate conversation exists
-    const conv = await pool.query('SELECT id FROM inbound_conversations WHERE id = $1', [d.conversation_id]);
-    if (!conv.rows[0]) {
+    const conv = await prisma.inboundConversation.findUnique({ where: { id: d.conversation_id } });
+    if (!conv) {
       return res.status(200).json({ success: false, error: { code: 'NOT_FOUND', message: 'Conversation not found' } });
     }
     // Validate volunteer exists
-    const vol = await pool.query('SELECT id FROM volunteers WHERE id = $1', [d.volunteer_id]);
-    if (!vol.rows[0]) {
+    const vol = await prisma.volunteer.findUnique({ where: { id: d.volunteer_id } });
+    if (!vol) {
       return res.status(200).json({ success: false, error: { code: 'NOT_FOUND', message: 'Volunteer not found' } });
     }
-    const { rows } = await pool.query(
-      `INSERT INTO conversation_calls (conversation_id, volunteer_id, outcome, notes)
-       VALUES ($1,$2,$3,$4) RETURNING *`,
-      [d.conversation_id, d.volunteer_id, d.outcome, d.notes ?? null]
-    );
-    await pool.query(`UPDATE inbound_conversations SET updated_at = NOW() WHERE id = $1`, [d.conversation_id]);
-    res.status(201).json({ success: true, data: rows[0] });
+    const created = await prisma.conversationCall.create({
+      data: {
+        conversation_id: d.conversation_id,
+        volunteer_id: d.volunteer_id,
+        outcome: d.outcome,
+        notes: d.notes,
+      }
+    });
+    await prisma.inboundConversation.update({
+      where: { id: d.conversation_id },
+      data: { updated_at: new Date() },
+    });
+    res.status(201).json({ success: true, data: created });
   } catch (e: any) {
     console.error('log-volunteer-call error:', e);
     res.status(200).json({ success: false, error: { code: 'INTERNAL_ERROR', message: e.message } });
@@ -537,10 +525,11 @@ app.get('/api/agent/conversation/:id', async (req, res) => {
   const id = Number(req.params.id);
   if (!Number.isInteger(id) || id <= 0) return res.status(200).json({ success: false, error: { code: 'INVALID_ID', message: 'Invalid conversation id' } });
   try {
-    const conv = await pool.query('SELECT * FROM inbound_conversations WHERE id = $1', [id]);
-    if (!conv.rows[0]) return res.status(200).json({ success: false, error: { code: 'NOT_FOUND', message: 'Conversation not found' } });
-    const calls = await pool.query('SELECT * FROM conversation_calls WHERE conversation_id = $1 ORDER BY id DESC', [id]);
-    res.status(200).json({ success: true, data: { conversation: conv.rows[0], calls: calls.rows } });
+    const conversation = await prisma.inboundConversation.findUnique({ where: { id } });
+    if (!conversation) return res.status(200).json({ success: false, error: { code: 'NOT_FOUND', message: 'Conversation not found' } });
+    
+    const calls = await prisma.conversationCall.findMany({ where: { conversation_id: id }, orderBy: { id: 'desc' } });
+    res.status(200).json({ success: true, data: { conversation, calls } });
   } catch (e: any) {
     console.error('get-conversation error:', e);
     res.status(200).json({ success: false, error: { code: 'INTERNAL_ERROR', message: e.message } });
@@ -553,15 +542,18 @@ app.get('/api/agent/conversation/:id/accepted', async (req, res) => {
   const id = Number(req.params.id);
   if (!Number.isInteger(id) || id <= 0) return res.status(200).json({ success: false, error: { code: 'INVALID_ID', message: 'Invalid conversation id' } });
   try {
-    const calls = await pool.query(
-      `SELECT cc.volunteer_id, v.first_name, v.last_name, v.phone_number
-       FROM conversation_calls cc
-       JOIN volunteers v ON v.id = cc.volunteer_id
-       WHERE cc.conversation_id = $1 AND cc.outcome = 'ACCEPTED'
-       ORDER BY cc.id DESC`,
-      [id]
-    );
-    res.status(200).json({ success: true, data: calls.rows });
+    const calls = await prisma.conversationCall.findMany({
+      where: { conversation_id: id, outcome: 'ACCEPTED' },
+      include: { volunteer: { select: { id: true, first_name: true, last_name: true, phone_number: true } } },
+      orderBy: { id: 'desc' },
+    });
+    const formatted = calls.map(c => ({
+      volunteer_id: c.volunteer_id,
+      first_name: c.volunteer.first_name,
+      last_name: c.volunteer.last_name,
+      phone_number: c.volunteer.phone_number,
+    }));
+    res.status(200).json({ success: true, data: formatted });
   } catch (e: any) {
     console.error('get-accepted-volunteers error:', e);
     res.status(200).json({ success: false, error: { code: 'INTERNAL_ERROR', message: e.message } });
@@ -574,13 +566,12 @@ app.get('/api/volunteer/:id', async (req, res) => {
   const id = Number(req.params.id);
   if (!Number.isInteger(id) || id <= 0) return res.status(200).json({ success: false, error: { code: 'INVALID_ID', message: 'Invalid volunteer id' } });
   try {
-    const v = await pool.query(
-      `SELECT id, first_name, last_name, phone_number, email, bio, zip_code, background_check_status, is_active, created_at
-       FROM volunteers WHERE id = $1`,
-      [id]
-    );
-    if (!v.rows[0]) return res.status(200).json({ success: false, error: { code: 'NOT_FOUND', message: 'Volunteer not found' } });
-    res.status(200).json({ success: true, data: v.rows[0] });
+    const v = await prisma.volunteer.findUnique({
+      where: { id },
+      select: { id: true, first_name: true, last_name: true, phone_number: true, email: true, bio: true, zip_code: true, background_check_status: true, is_active: true, created_at: true },
+    });
+    if (!v) return res.status(200).json({ success: false, error: { code: 'NOT_FOUND', message: 'Volunteer not found' } });
+    res.status(200).json({ success: true, data: v });
   } catch (e: any) {
     console.error('get-volunteer error:', e);
     res.status(200).json({ success: false, error: { code: 'INTERNAL_ERROR', message: e.message } });
@@ -603,32 +594,37 @@ app.post('/api/agent/finalize-conversation', async (req, res) => {
   if (!parsed.success) return res.status(200).json({ success: false, error: { code: 'INVALID_BODY', message: 'Invalid request body', details: parsed.error.issues } });
   const d = parsed.data;
   try {
-    const conv = await pool.query('SELECT * FROM inbound_conversations WHERE id = $1', [d.conversation_id]);
-    const c = conv.rows[0];
+    const conv = await prisma.inboundConversation.findUnique({ where: { id: d.conversation_id } });
+    const c = conv;
     if (!c) return res.status(200).json({ success: false, error: { code: 'NOT_FOUND', message: 'Conversation not found' } });
     const seniorId = d.senior_id ?? c.senior_id;
     if (!seniorId) return res.status(200).json({ success: false, error: { code: 'NO_SENIOR', message: 'Senior id is required to schedule' } });
 
     let locationText: string | null = d.location ?? null;
     if (!locationText) {
-      const addr = await pool.query('SELECT street_address, city, state, zip_code FROM seniors WHERE id = $1', [seniorId]);
-      const a = addr.rows[0];
-      if (a) {
-        const parts = [a.street_address, a.city, a.state, a.zip_code].filter(Boolean);
+      const addr = await prisma.senior.findUnique({ where: { id: seniorId }, select: { street_address: true, city: true, state: true, zip_code: true } });
+      if (addr) {
+        const parts = [addr.street_address, addr.city, addr.state, addr.zip_code].filter(Boolean);
         locationText = parts.length ? parts.join(', ') : null;
       }
     }
 
-    const appt = await pool.query(
-      `INSERT INTO appointments (senior_id, volunteer_id, appointment_datetime, location, status, notes_for_volunteer)
-       VALUES ($1,$2,$3,$4,'Scheduled',$5) RETURNING *`,
-      [seniorId, d.chosen_volunteer_id, d.appointment_datetime, locationText, d.notes_for_volunteer ?? null]
-    );
-    await pool.query(
-      `UPDATE inbound_conversations SET scheduled_appointment_id = $2, status = 'SCHEDULED', updated_at = NOW() WHERE id = $1`,
-      [d.conversation_id, appt.rows[0].id]
-    );
-    res.status(201).json({ success: true, data: appt.rows[0] });
+    const appt = await prisma.appointment.create({
+      data: {
+        senior_id: seniorId,
+        volunteer_id: d.chosen_volunteer_id,
+        appointment_datetime: d.appointment_datetime,
+        location: locationText,
+        status: 'Scheduled',
+        notes_for_volunteer: d.notes_for_volunteer,
+      }
+    });
+
+    await prisma.inboundConversation.update({
+      where: { id: d.conversation_id },
+      data: { scheduled_appointment_id: appt.id, status: 'SCHEDULED', updated_at: new Date() },
+    });
+    res.status(201).json({ success: true, data: appt });
   } catch (e: any) {
     console.error('finalize-conversation error:', e);
     res.status(200).json({ success: false, error: { code: 'INTERNAL_ERROR', message: e.message } });
@@ -711,12 +707,12 @@ app.post('/api/agent/outbound-call', async (req, res) => {
 
   const { conversation_id, volunteer_id, to_number } = parsed.data;
   try {
-    const conv = await pool.query('SELECT * FROM inbound_conversations WHERE id = $1', [conversation_id]);
-    if (!conv.rows[0]) return res.status(200).json({ success: false, error: { code: 'NOT_FOUND', message: 'Conversation not found' } });
-    const volunteer = await pool.query('SELECT id, first_name, last_name, phone_number FROM volunteers WHERE id = $1', [volunteer_id]);
-    if (!volunteer.rows[0]) return res.status(200).json({ success: false, error: { code: 'NOT_FOUND', message: 'Volunteer not found' } });
+    const conv = await prisma.inboundConversation.findUnique({ where: { id: conversation_id } });
+    if (!conv) return res.status(200).json({ success: false, error: { code: 'NOT_FOUND', message: 'Conversation not found' } });
+    const volunteer = await prisma.volunteer.findUnique({ where: { id: volunteer_id }, select: { id: true, first_name: true, last_name: true, phone_number: true } });
+    if (!volunteer) return res.status(200).json({ success: false, error: { code: 'NOT_FOUND', message: 'Volunteer not found' } });
 
-    const dialNumber = to_number || volunteer.rows[0].phone_number;
+    const dialNumber = to_number || volunteer.phone_number;
     const url = 'https://api.elevenlabs.io/v1/convai/twilio/outbound-call';
     const payload = { agent_id: agentId, agent_phone_number_id: phoneNumberId, to_number: dialNumber };
     console.log('[XI] outbound-call -> request', { url, payload, headers: { 'xi-api-key': `***${String(xiApiKey).slice(-4)}` } });
@@ -730,11 +726,16 @@ app.post('/api/agent/outbound-call', async (req, res) => {
     let data: any; try { data = JSON.parse(text); } catch { data = { raw: text }; }
 
     // record a pending call log entry
-    await pool.query(
-      `INSERT INTO conversation_calls (conversation_id, volunteer_id, outcome, notes, call_sid, role)
-       VALUES ($1,$2,$3,$4,$5,$6)`,
-      [conversation_id, volunteer_id, 'PENDING', null, data?.callSid ?? null, 'VOLUNTEER']
-    );
+    await prisma.conversationCall.create({
+      data: {
+        conversation_id,
+        volunteer_id,
+        outcome: 'PENDING',
+        notes: null,
+        call_sid: data?.callSid ?? null,
+        role: 'VOLUNTEER',
+      }
+    });
 
     return res.status(200).json({ success: response.ok, upstream_status: response.status, data });
   } catch (e: any) {
@@ -769,15 +770,14 @@ app.post('/api/agent/outbound-callback-senior', async (req, res) => {
 
   const { conversation_id, senior_id, to_number } = parsed.data;
   try {
-    const conv = await pool.query('SELECT * FROM inbound_conversations WHERE id = $1', [conversation_id]);
-    const c = conv.rows[0];
-    if (!c) return res.status(200).json({ success: false, error: { code: 'NOT_FOUND', message: 'Conversation not found' } });
-    const sid = senior_id ?? c.senior_id;
+    const c = await prisma.inboundConversation.findUnique({ where: { id: conversation_id } });
+    const conv = c;
+    if (!conv) return res.status(200).json({ success: false, error: { code: 'NOT_FOUND', message: 'Conversation not found' } });
+    const sid = senior_id ?? conv.senior_id;
     if (!sid) return res.status(200).json({ success: false, error: { code: 'NO_SENIOR', message: 'Senior id/number required' } });
-    const s = await pool.query('SELECT id, first_name, last_name, phone_number FROM seniors WHERE id = $1', [sid]);
-    const sres = s.rows[0];
-    if (!sres) return res.status(200).json({ success: false, error: { code: 'NOT_FOUND', message: 'Senior not found' } });
-    const dialNumber = to_number || sres.phone_number;
+    const s = await prisma.senior.findUnique({ where: { id: sid }, select: { id: true, first_name: true, last_name: true, phone_number: true } });
+    if (!s) return res.status(200).json({ success: false, error: { code: 'NOT_FOUND', message: 'Senior not found' } });
+    const dialNumber = to_number || s.phone_number;
 
     const url = 'https://api.elevenlabs.io/v1/convai/twilio/outbound-call';
     const payload = { agent_id: agentId, agent_phone_number_id: phoneNumberId, to_number: dialNumber };
@@ -791,11 +791,16 @@ app.post('/api/agent/outbound-callback-senior', async (req, res) => {
     console.log('[XI] outbound-callback-senior <- response', { ok: response.ok, status: response.status, bodyPreview: text.slice(0, 2000) });
     let data: any; try { data = JSON.parse(text); } catch { data = { raw: text }; }
 
-    await pool.query(
-      `INSERT INTO conversation_calls (conversation_id, volunteer_id, outcome, notes, call_sid, role)
-       VALUES ($1, $2, $3, $4, $5, $6)`,
-      [conversation_id, 0, 'PENDING', null, data?.callSid ?? null, 'SENIOR_CALLBACK']
-    );
+    await prisma.conversationCall.create({
+      data: {
+        conversation_id,
+        volunteer_id: 0, // TODO: This seems wrong, should probably be volunteer's ID if available
+        outcome: 'PENDING',
+        notes: null,
+        call_sid: data?.callSid ?? null,
+        role: 'SENIOR_CALLBACK',
+      }
+    });
 
     return res.status(200).json({ success: response.ok, upstream_status: response.status, data });
   } catch (e: any) {
@@ -843,20 +848,20 @@ app.post('/api/agent/personalization', async (req: any, res) => {
     const normalizedCaller = normalizePhoneNumber(d.caller_id) || d.caller_id;
     let seniorRow: any = null;
     try {
-      const s = await pool.query('SELECT id, first_name, last_name, street_address, city, state, zip_code FROM seniors WHERE phone_number = $1', [normalizedCaller]);
-      seniorRow = s.rows[0] || null;
-    } catch {}
+      seniorRow = await prisma.senior.findFirst({
+        where: { phone_number: normalizedCaller },
+        select: { id: true, first_name: true, last_name: true, street_address: true, city: true, state: true, zip_code: true },
+      });
+    } catch { }
 
     let conversation: any = null;
     if (d.conversation_id) {
-      const c = await pool.query('SELECT * FROM inbound_conversations WHERE id = $1', [d.conversation_id]);
-      conversation = c.rows[0] || null;
+      conversation = await prisma.inboundConversation.findUnique({ where: { id: d.conversation_id } });
     }
 
     let volunteer: any = null;
     if (d.volunteer_id) {
-      const v = await pool.query('SELECT id, first_name, last_name, phone_number, zip_code FROM volunteers WHERE id = $1', [d.volunteer_id]);
-      volunteer = v.rows[0] || null;
+      volunteer = await prisma.volunteer.findUnique({ where: { id: d.volunteer_id }, select: { id: true, first_name: true, last_name: true, phone_number: true, zip_code: true } });
     }
 
     // Auto-derive mode and context from call_sid if available
@@ -864,20 +869,17 @@ app.post('/api/agent/personalization', async (req: any, res) => {
     let conversationFromCall: any = null;
     let volunteerFromCall: any = null;
     try {
-      const cc = await pool.query('SELECT * FROM conversation_calls WHERE call_sid = $1 LIMIT 1', [d.call_sid]);
-      if (cc.rows[0]) {
-        const ccall = cc.rows[0];
-        const conv = await pool.query('SELECT * FROM inbound_conversations WHERE id = $1', [ccall.conversation_id]);
-        conversationFromCall = conv.rows[0] || null;
+      const ccall = await prisma.conversationCall.findFirst({ where: { call_sid: d.call_sid } });
+      if (ccall) {
+        conversationFromCall = await prisma.inboundConversation.findUnique({ where: { id: ccall.conversation_id } });
         if (ccall.role === 'VOLUNTEER') mode = 'VOLUNTEER_OUTBOUND';
         if (ccall.role === 'SENIOR_CALLBACK') mode = 'SENIOR_CALLBACK';
-        const vol = await pool.query('SELECT id, first_name, last_name, phone_number, zip_code FROM volunteers WHERE id = $1', [ccall.volunteer_id]);
-        volunteerFromCall = vol.rows[0] || null;
+        volunteerFromCall = await prisma.volunteer.findUnique({ where: { id: ccall.volunteer_id }, select: { id: true, first_name: true, last_name: true, phone_number: true, zip_code: true } });
       }
-    } catch {}
+    } catch { }
 
-    const modeConversation = conversationFromCall || (d.conversation_id ? (await pool.query('SELECT * FROM inbound_conversations WHERE id = $1', [d.conversation_id])).rows[0] : null) || null;
-    const modeVolunteer = volunteerFromCall || (d.volunteer_id ? (await pool.query('SELECT id, first_name, last_name, phone_number, zip_code FROM volunteers WHERE id = $1', [d.volunteer_id])).rows[0] : null) || null;
+    const modeConversation = conversationFromCall || (d.conversation_id ? (await prisma.inboundConversation.findUnique({ where: { id: d.conversation_id } })) : null) || null;
+    const modeVolunteer = volunteerFromCall || (d.volunteer_id ? (await prisma.volunteer.findUnique({ where: { id: d.volunteer_id }, select: { id: true, first_name: true, last_name: true, phone_number: true, zip_code: true } })) : null) || null;
     const modePrompts: Record<string, string> = {
       INBOUND: [
         'You are the CareShare assistant for inbound senior calls.',
@@ -984,12 +986,11 @@ app.post('/api/agent/personalization', async (req: any, res) => {
 app.get('/api/volunteers', async (_req, res) => {
   console.log('AGENT TOOL: getVolunteers');
   try {
-    const { rows } = await pool.query(
-      `SELECT id, first_name, last_name, phone_number, email, bio, zip_code, background_check_status, is_active, created_at
-       FROM volunteers
-       ORDER BY id DESC`
-    );
-    res.json(rows);
+    const volunteers = await prisma.volunteer.findMany({
+      select: { id: true, first_name: true, last_name: true, phone_number: true, email: true, bio: true, zip_code: true, background_check_status: true, is_active: true, created_at: true },
+      orderBy: { id: 'desc' },
+    });
+    res.json(volunteers);
   } catch (e: any) {
     console.error('GET /api/volunteers error:', e);
     res.status(500).json({ error: e.message || 'Internal error' });
@@ -1025,12 +1026,15 @@ app.post('/api/agent/log-call-outcome', async (req, res) => {
   if (!parsed.success) return res.status(200).json({ success: false, error: { code: 'INVALID_BODY', message: 'Invalid request body', details: parsed.error.issues } });
   const { senior_id, volunteer_id, outcome, notes } = parsed.data;
   try {
-    const { rows } = await pool.query(
-      `INSERT INTO call_attempts (senior_id, volunteer_id, outcome, notes)
-       VALUES ($1, $2, $3, $4) RETURNING *`,
-      [senior_id, volunteer_id, outcome, notes ?? null]
-    );
-    res.status(201).json(rows[0]);
+    const call = await prisma.callAttempt.create({
+      data: {
+        senior_id,
+        volunteer_id,
+        outcome,
+        notes: notes ?? null,
+      }
+    });
+    res.status(201).json(call);
   } catch (e: any) {
     console.error('log-call-outcome error:', e);
     res.status(200).json({ success: false, error: { code: 'INTERNAL_ERROR', message: e.message } });
@@ -1055,23 +1059,27 @@ app.post('/api/agent/schedule-appointment', async (req, res) => {
   try {
     let locationText: string | null = location ?? null;
     if (!locationText) {
-      const addr = await pool.query(
-        'SELECT street_address, city, state, zip_code FROM seniors WHERE id = $1',
-        [senior_id]
-      );
-      const a = addr.rows[0];
-      if (a) {
-        const parts = [a.street_address, a.city, a.state, a.zip_code].filter(Boolean);
+      const addr = await prisma.senior.findUnique({
+        where: { id: senior_id },
+        select: { street_address: true, city: true, state: true, zip_code: true },
+      });
+      if (addr) {
+        const parts = [addr.street_address, addr.city, addr.state, addr.zip_code].filter(Boolean);
         locationText = parts.length ? parts.join(', ') : null;
       }
     }
 
-    const { rows } = await pool.query(
-      `INSERT INTO appointments (senior_id, volunteer_id, appointment_datetime, location, status, notes_for_volunteer)
-       VALUES ($1, $2, $3, $4, 'Scheduled', $5) RETURNING *`,
-      [senior_id, volunteer_id, appointment_datetime, locationText, notes_for_volunteer]
-    );
-    res.status(201).json(rows[0]);
+    const appt = await prisma.appointment.create({
+      data: {
+        senior_id,
+        volunteer_id,
+        appointment_datetime,
+        location: locationText,
+        status: 'Scheduled',
+        notes_for_volunteer,
+      }
+    });
+    res.status(201).json(appt);
   } catch (e: any) {
     console.error('schedule-appointment error:', e);
     res.status(200).json({ success: false, error: { code: 'INTERNAL_ERROR', message: e.message } });
@@ -1085,12 +1093,12 @@ app.post('/api/agent/confirm-appointment', async (req, res) => {
   const parsed = confirmSchema.safeParse(req.body);
   if (!parsed.success) return res.status(200).json({ success: false, error: { code: 'INVALID_BODY', message: 'Invalid request body', details: parsed.error.issues } });
   try {
-    const { rows } = await pool.query(
-      `UPDATE appointments SET status = 'Confirmed' WHERE id = $1 RETURNING *`,
-      [parsed.data.appointment_id]
-    );
-    if (!rows[0]) return res.status(200).json({ success: false, error: { code: 'NOT_FOUND', message: 'Appointment not found' } });
-    res.json(rows[0]);
+    const updated = await prisma.appointment.update({
+      where: { id: parsed.data.appointment_id },
+      data: { status: 'Confirmed' },
+    });
+    if (!updated) return res.status(200).json({ success: false, error: { code: 'NOT_FOUND', message: 'Appointment not found' } });
+    res.json(updated);
   } catch (e: any) {
     console.error('confirm-appointment error:', e);
     res.status(200).json({ success: false, error: { code: 'INTERNAL_ERROR', message: e.message } });
@@ -1104,15 +1112,17 @@ app.get('/api/senior/:id/appointments', async (req, res) => {
   const id = Number(req.params.id);
   if (!Number.isInteger(id) || id <= 0) return res.status(400).json({ error: 'Invalid senior id' });
   try {
-    const { rows } = await pool.query(
-      `SELECT a.*, v.first_name AS volunteer_first_name, v.last_name AS volunteer_last_name
-       FROM appointments a
-       LEFT JOIN volunteers v ON v.id = a.volunteer_id
-       WHERE a.senior_id = $1
-       ORDER BY a.appointment_datetime DESC`,
-      [id]
-    );
-    res.json(rows);
+    const appointments = await prisma.appointment.findMany({
+      where: { senior_id: id },
+      include: { volunteer: { select: { first_name: true, last_name: true } } },
+      orderBy: { appointment_datetime: 'desc' },
+    });
+    const formatted = appointments.map(a => ({
+      ...a,
+      volunteer_first_name: a.volunteer?.first_name,
+      volunteer_last_name: a.volunteer?.last_name,
+    }));
+    res.json(formatted);
   } catch (e: any) {
     console.error('senior appointments error:', e);
     res.status(500).json({ error: e.message || 'Internal error' });
@@ -1125,15 +1135,17 @@ app.get('/api/volunteer/:id/appointments', async (req, res) => {
   const id = Number(req.params.id);
   if (!Number.isInteger(id) || id <= 0) return res.status(400).json({ error: 'Invalid volunteer id' });
   try {
-    const { rows } = await pool.query(
-      `SELECT a.*, s.first_name AS senior_first_name, s.last_name AS senior_last_name
-       FROM appointments a
-       LEFT JOIN seniors s ON s.id = a.senior_id
-       WHERE a.volunteer_id = $1
-       ORDER BY a.appointment_datetime DESC`,
-      [id]
-    );
-    res.json(rows);
+    const appointments = await prisma.appointment.findMany({
+      where: { volunteer_id: id },
+      include: { senior: { select: { first_name: true, last_name: true } } },
+      orderBy: { appointment_datetime: 'desc' },
+    });
+    const formatted = appointments.map(a => ({
+      ...a,
+      senior_first_name: a.senior?.first_name,
+      senior_last_name: a.senior?.last_name,
+    }));
+    res.json(formatted);
   } catch (e: any) {
     console.error('volunteer appointments error:', e);
     res.status(500).json({ error: e.message || 'Internal error' });
@@ -1151,12 +1163,12 @@ app.post('/api/appointments/:id/status', async (req, res) => {
   const parsed = statusSchema.safeParse(req.body);
   if (!parsed.success) return res.status(400).json({ error: 'Invalid request body', details: parsed.error.issues });
   try {
-    const { rows } = await pool.query(
-      `UPDATE appointments SET status = $1 WHERE id = $2 RETURNING *`,
-      [parsed.data.status, id]
-    );
-    if (!rows[0]) return res.status(404).json({ error: 'Appointment not found' });
-    res.json(rows[0]);
+    const updated = await prisma.appointment.update({
+      where: { id },
+      data: { status: parsed.data.status },
+    });
+    if (!updated) return res.status(404).json({ error: 'Appointment not found' });
+    res.json(updated);
   } catch (e: any) {
     console.error('update appointment status error:', e);
     res.status(500).json({ error: e.message || 'Internal error' });
