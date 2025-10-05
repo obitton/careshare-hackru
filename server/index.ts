@@ -5,9 +5,9 @@ import pool from './db';
 import { z } from 'zod';
 import { createRequire } from 'module';
 import crypto from 'crypto';
+import { parsePhoneNumberFromString } from 'libphonenumber-js';
 const nodeRequire = createRequire(process.cwd() + '/server/index.ts');
 const zipcodes = nodeRequire('zipcodes');
-const libphonenumber = nodeRequire('libphonenumber-js');
 
 const app = express();
 const port = process.env.PORT || 3001;
@@ -145,7 +145,7 @@ function parseRequestForSkill(requestDetails: string): string | null {
 
 function normalizePhoneNumber(phone: string, defaultCountry: string = 'US'): string | null {
   try {
-    const phoneNumber = libphonenumber.parsePhoneNumberFromString(phone, defaultCountry);
+    const phoneNumber = parsePhoneNumberFromString(phone, defaultCountry);
     if (phoneNumber && phoneNumber.isValid()) {
       return phoneNumber.format('E.164');
     }
