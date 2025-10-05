@@ -531,6 +531,33 @@ app.post('/api/agent/log-volunteer-call', async (req, res) => {
       where: { id: d.conversation_id },
       data: { updated_at: new Date() },
     });
+
+    // Trigger senior callback on ACCEPTED
+    if (d.outcome === 'ACCEPTED') {
+      await dispatchSeniorCallback(d.conversation_id, conv.senior_id ?? undefined, d.volunteer_id, true);
+    } else {
+      // If no acceptance after contacting all volunteers, notify senior politely
+      try {
+        const calls = await prisma.conversationCall.findMany({
+          where: { conversation_id: d.conversation_id, outcome: { in: ['ACCEPTED','DECLINED','NO_ANSWER','VOICEMAIL'] } },
+        });
+        const hasAccepted = calls.some(c => c.outcome === 'ACCEPTED');
+        if (!hasAccepted) {
+          // Determine how many volunteers were targeted from stored snapshot
+          let targetCount = 0;
+          try {
+            const snap = (conv.nearby_volunteers as any) as any[];
+            if (Array.isArray(snap)) targetCount = snap.length;
+          } catch {}
+          if (targetCount > 0 && calls.length >= targetCount) {
+            await dispatchSeniorCallback(d.conversation_id, conv.senior_id ?? undefined, undefined, false);
+          }
+        }
+      } catch (e) {
+        console.warn('post-decision senior callback check failed:', e);
+      }
+    }
+
     res.status(201).json({ success: true, data: created });
   } catch (e: any) {
     console.error('log-volunteer-call error:', e);
@@ -833,6 +860,9 @@ app.post('/api/agent/personalization', async (req: any, res) => {
       const volunteerMatch = await prisma.volunteer.findFirst({ where: { phone_number: d.called_number } });
       if (volunteerMatch) {
         mode = 'VOLUNTEER_OUTBOUND';
+      } else {
+        const seniorMatch = await prisma.senior.findFirst({ where: { phone_number: d.called_number } });
+        if (seniorMatch) mode = 'SENIOR_CALLBACK';
       }
     }
     
@@ -1081,6 +1111,95 @@ async function dispatchOutboundCall(conversation_id: number, volunteer_id: numbe
   }
 }
 
+// INTERNAL-ONLY: Dispatches a callback to the senior with contextual messaging
+async function dispatchSeniorCallback(conversation_id: number, senior_id?: number, volunteer_id?: number, available: boolean = true) {
+  const xiApiKey = (process.env as any)['XI-API-KEY'] || process.env.XI_API_KEY || process.env.ELEVENLABS_API_KEY;
+  const agentId = process.env.ELEVENLABS_AGENT_ID;
+  const phoneNumberId = process.env.AGENT_PHONE_NUMBER_ID;
+  const missing: string[] = [];
+  if (!xiApiKey) missing.push('XI-API-KEY or XI_API_KEY or ELEVENLABS_API_KEY');
+  if (!agentId) missing.push('ELEVENLABS_AGENT_ID');
+  if (!phoneNumberId) missing.push('AGENT_PHONE_NUMBER_ID');
+  if (missing.length) {
+    console.error('[XI] dispatchSeniorCallback missing env vars:', missing);
+    return;
+  }
+  try {
+    const conv = await prisma.inboundConversation.findUnique({ where: { id: conversation_id } });
+    if (!conv) return;
+    const sid = senior_id ?? conv.senior_id;
+    if (!sid) return;
+    const s = await prisma.senior.findUnique({ where: { id: sid }, select: { id: true, first_name: true, last_name: true, phone_number: true } });
+    if (!s?.phone_number) return;
+
+    let volunteerName: string | null = null;
+    if (volunteer_id) {
+      const v = await prisma.volunteer.findUnique({ where: { id: volunteer_id }, select: { first_name: true, last_name: true } });
+      if (v) volunteerName = `${v.first_name ?? ''} ${v.last_name ?? ''}`.trim();
+    }
+
+    const seniorName = `${s.first_name ?? ''} ${s.last_name ?? ''}`.trim() || 'there';
+    const requestText = conv.request_details || 'your request';
+
+    const systemMessage = available
+      ? [
+          'You are calling the senior back with results.',
+          `You are calling ${seniorName}.`,
+          volunteerName ? `Let them know that ${volunteerName} is available to help with "${requestText}".` : `Let them know a volunteer is available to help with "${requestText}".`,
+          'Offer to confirm scheduling details and answer quick questions.',
+        ].join(' ')
+      : [
+          'You are calling the senior back with an update.',
+          `You are calling ${seniorName}.`,
+          `Inform them that we are still reaching out to volunteers for "${requestText}" and will call back soon.`,
+          'Keep it brief and reassuring.',
+        ].join(' ');
+
+    const firstMessage = available
+      ? (volunteerName
+          ? `Hello ${s.first_name ?? ''}, good news — we found a volunteer, ${volunteerName}, who can help with ${requestText}.`
+          : `Hello ${s.first_name ?? ''}, good news — we found a volunteer who can help with ${requestText}.`)
+      : `Hello ${s.first_name ?? ''}, this is CareShare — we are still contacting volunteers for ${requestText} and will update you soon.`;
+
+    const url = 'https://api.elevenlabs.io/v1/convai/twilio/outbound-call';
+    const payload = {
+      agent_id: agentId,
+      agent_phone_number_id: phoneNumberId,
+      to_number: s.phone_number,
+      conversation_config_override: {
+        agent: {
+          prompt: { prompt: systemMessage },
+          first_message: firstMessage,
+          language: 'en',
+        },
+      },
+    };
+    console.log('[XI] dispatchSeniorCallback -> request', { url, payload: { ...payload, conversation_config_override: '...' }, headers: { 'xi-api-key': `***${String(xiApiKey).slice(-4)}` } });
+    const response = await fetch(url, {
+      method: 'POST',
+      headers: { 'xi-api-key': xiApiKey as string, 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    });
+    const text = await response.text();
+    console.log('[XI] dispatchSeniorCallback <- response', { ok: response.ok, status: response.status, bodyPreview: text.slice(0, 2000) });
+    const data: any = JSON.parse(text);
+
+    if (response.ok && data.callSid) {
+      await prisma.conversationCall.create({
+        data: {
+          conversation_id,
+          volunteer_id: 0,
+          outcome: 'INITIATED',
+          call_sid: data.callSid,
+          role: 'SENIOR_CALLBACK',
+        }
+      });
+      console.log(`[XI] Logged senior callback for conversation ${conversation_id} with SID ${data.callSid}`);
+    }
+  } catch (e: any) {
+    console.error('[XI] dispatchSeniorCallback failed:', e);
+  }
+}
 
 // 2b) UI compatibility routes (used by existing SeniorPortal)
 app.get('/api/volunteers', async (_req, res) => {
