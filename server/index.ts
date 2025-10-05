@@ -869,9 +869,40 @@ app.post('/api/agent/personalization', async (req: any, res) => {
     const modeConversation = conversationFromCall || (d.conversation_id ? (await pool.query('SELECT * FROM inbound_conversations WHERE id = $1', [d.conversation_id])).rows[0] : null) || null;
     const modeVolunteer = volunteerFromCall || (d.volunteer_id ? (await pool.query('SELECT id, first_name, last_name, phone_number, zip_code FROM volunteers WHERE id = $1', [d.volunteer_id])).rows[0] : null) || null;
     const modePrompts: Record<string, string> = {
-      INBOUND: 'You are the CareShare assistant for inbound senior calls. 1) Greet warmly. 2) If caller_id is available, DO NOT ask for the phone number; instead, repeat it back and confirm before proceeding. 3) Confirm identity and key profile details even if a record exists. 4) Gather the task details, preferred date/time, constraints, and confirm the zip code. DO NOT ask the senior for a search radius; the system handles radius automatically (and may expand it). If the senior\'s address is missing or incomplete, POLITELY COLLECT street address, city, state, and zip; if it exists, do not re-ask. 5) Interpret phrases like "today" and "tomorrow" using the provided current time/timezone. 6) IMPORTANT: CALL startInboundConversation exactly once with caller_phone_number and request_details to create the conversation and store nearby volunteers. 7) DO NOT call logVolunteerCall, finalizeConversation, scheduleAppointment, confirmAppointment, updateAppointmentStatus, or outbound-call endpoints during inbound. 8) NEVER mention internal IDs, tool names, or technical terms to the senior (e.g., do not say "conversation_id"). 9) Close by telling the senior they will be contacted once a volunteer accepts.',
-      VOLUNTEER_OUTBOUND: 'You are the CareShare assistant calling a volunteer. Briefly describe the senior\'s request, the needed skill, and proposed timing. Ask if they are available and willing. If voicemail, politely hang up. DO NOT schedule or finalize during this call. After the call, log the outcome using logVolunteerCall. Forbidden this call: startInboundConversation, finalizeConversation, scheduleAppointment, confirmAppointment. NEVER mention internal IDs/tool names to the volunteer.',
-      SENIOR_CALLBACK: 'You are calling the senior back with results. Present only volunteers who ACCEPTED (from getAcceptedVolunteers). Ask the senior to choose one. When they choose, schedule using finalizeConversation (with the chosen volunteer) and then confirmAppointment. Forbidden this call: startInboundConversation, logVolunteerCall. NEVER mention internal IDs/tool names to the senior.',
+      INBOUND: [
+        'You are the CareShare assistant for inbound senior calls.',
+        'STRICT ACTION POLICY:',
+        '- You MUST execute real tool calls and may use EITHER toolset:',
+        '  • MCP tools (preferred) OR',
+        '  • Server tool endpoints (HTTP) that the platform exposes to you.',
+        '- If one tool fails/is unavailable, immediately try the equivalent in the other toolset.',
+        '- Never claim an action unless a tool call returned success; base next steps only on tool responses.',
+        'Allowed/tools for this mode: createSenior (optional) and startInboundConversation (REQUIRED exactly once) — or their HTTP equivalents.',
+        'Flow guardrails:',
+        '1) Greet warmly.',
+        '2) If caller_id is available, do NOT ask for their phone number; confirm it.',
+        '3) Confirm identity and profile details if present; otherwise collect minimal needed info.',
+        '4) Collect the task details, preferred date/time, constraints; confirm the zip. Don’t ask for radius (system expands automatically).',
+        '5) Interpret time phrases like "today"/"tomorrow" using provided current time/timezone.',
+        '6) CALL startInboundConversation exactly once and rely on its returned nearby_volunteers. Close by informing the senior they will be contacted once a volunteer accepts.',
+      ].join(' '),
+      VOLUNTEER_OUTBOUND: [
+        'You are the CareShare assistant calling a volunteer.',
+        'STRICT ACTION POLICY:',
+        '- You MUST use tools and may use EITHER toolset (MCP or Server HTTP). If one fails, try the other.',
+        '- You MUST record the result with logVolunteerCall (ACCEPTED/DECLINED/NO_ANSWER/VOICEMAIL) before finishing. Do not claim it unless the tool succeeds.',
+        'Allowed/tools: logVolunteerCall (REQUIRED), getVolunteer (optional), getConversation (optional) — or their HTTP equivalents.',
+        'Behavior: Briefly describe the senior’s request, needed skill, and proposed timing; ask availability; if voicemail, end gently then log outcome.',
+      ].join(' '),
+      SENIOR_CALLBACK: [
+        'You are calling the senior back with results.',
+        'STRICT ACTION POLICY:',
+        '- You MUST use tools and may use EITHER toolset (MCP or Server HTTP). If one fails, try the other.',
+        '- Required sequence: getAcceptedVolunteers → present choices → finalizeConversation when chosen → confirm-appointment.',
+        '- Do not state you scheduled/confirmed unless tools returned success; cite ids/times from responses when useful.',
+        'Allowed/tools: getAcceptedVolunteers (REQUIRED first), finalizeConversation (REQUIRED), confirm-appointment (RECOMMENDED), getConversation (optional) — or their HTTP equivalents.',
+        'Behavior: Guide the senior to choose an accepted volunteer; then schedule via tools and confirm succinctly.',
+      ].join(' '),
     };
     const modeFirstMessages: Record<string, string> = {
       INBOUND: 'Hello! How can I help you today?',
@@ -885,22 +916,18 @@ app.post('/api/agent/personalization', async (req: any, res) => {
     const seniorName = seniorRow ? `${seniorRow.first_name ?? ''} ${seniorRow.last_name ?? ''}`.trim() : null;
     if (mode === 'INBOUND') {
       const extras: string[] = [];
-      extras.unshift('Use MCP tools only. Do not make HTTP requests or non-MCP tools.');
-      extras.unshift('Allowed tools this call: createSenior, startInboundConversation.');
       const nowIso = new Date().toISOString();
       const tz = 'America/New_York';
       extras.push(`Current time (UTC): ${nowIso}. Timezone: ${tz}. Caller phone: ${normalizedCaller}.`);
       if (seniorName) extras.push(`Possible match on file: ${seniorName} (id ${seniorRow.id}). Confirm identity before proceeding.`);
       if (seniorRow && (!seniorRow.street_address || !seniorRow.city || !seniorRow.state || !seniorRow.zip_code)) {
-        extras.push('Address appears incomplete or missing; politely collect street address, city, state, zip, then update the record using createSenior (upsert by phone).');
+        extras.push('Address appears incomplete or missing; politely collect street address, city, state, zip, then upsert via createSenior (email is optional).');
       }
       if (modeConversation?.matched_skill) extras.push(`Parsed skill (if mentioned): ${modeConversation.matched_skill}.`);
       systemMessage = `${systemMessage} ${extras.join(' ')}`.trim();
     } else if (mode === 'VOLUNTEER_OUTBOUND') {
       const volName = volunteer ? `${volunteer.first_name ?? ''} ${volunteer.last_name ?? ''}`.trim() : null;
       const extras: string[] = [];
-      extras.unshift('Use MCP tools only. Do not make HTTP requests or non-MCP tools.');
-      extras.unshift('Allowed tools this call: logVolunteerCall, getVolunteer (optional), getConversation (optional).');
       if (seniorName) extras.push(`Senior: ${seniorName}.`);
       const volName2 = modeVolunteer ? `${modeVolunteer.first_name ?? ''} ${modeVolunteer.last_name ?? ''}`.trim() : volName;
       if (volName2) extras.push(`Volunteer: ${volName2}.`);
@@ -908,8 +935,6 @@ app.post('/api/agent/personalization', async (req: any, res) => {
       systemMessage = `${systemMessage} ${extras.join(' ')}`.trim();
     } else if (mode === 'SENIOR_CALLBACK') {
       const extras: string[] = [];
-      extras.unshift('Use MCP tools only. Do not make HTTP requests or non-MCP tools.');
-      extras.unshift('Allowed tools this call: getAcceptedVolunteers, finalizeConversation, confirmAppointment, getConversation (optional).');
       if (seniorName) extras.push(`Senior: ${seniorName}.`);
       if (Array.isArray(modeConversation?.nearby_volunteers)) extras.push(`Nearby volunteers considered: ${modeConversation.nearby_volunteers.length}.`);
       systemMessage = `${systemMessage} ${extras.join(' ')}`.trim();
