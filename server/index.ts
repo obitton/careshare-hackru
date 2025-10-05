@@ -2,15 +2,37 @@ console.log('Server process started...');
 import 'dotenv/config';
 import express from 'express';
 import pool from './db';
+import cors from 'cors';
 import { z } from 'zod';
 import { createRequire } from 'module';
 import crypto from 'crypto';
-import { parsePhoneNumberFromString } from 'libphonenumber-js';
 const nodeRequire = createRequire(process.cwd() + '/server/index.ts');
 const zipcodes = nodeRequire('zipcodes');
+let libphonenumber: any;
+(async () => {
+  libphonenumber = await import('libphonenumber-js');
+})();
+
 
 const app = express();
 const port = process.env.PORT || 3001;
+
+// CORS configuration
+const allowedOrigins = [
+  'https://careshare-hackru-1.onrender.com',
+  'http://localhost:5173', // Vite default
+  'http://localhost:3000', // Common alternative
+];
+app.use(cors({
+  origin: function (origin, callback) {
+    if (!origin || allowedOrigins.indexOf(origin) !== -1) {
+      callback(null, true);
+    } else {
+      callback(new Error('Not allowed by CORS'));
+    }
+  }
+}));
+
 
 // Capture raw body for HMAC verification (e.g., ElevenLabs webhook)
 app.use(express.json({ verify: (req: any, _res, buf) => { req.rawBody = buf; } }));
@@ -145,7 +167,7 @@ function parseRequestForSkill(requestDetails: string): string | null {
 
 function normalizePhoneNumber(phone: string, defaultCountry: string = 'US'): string | null {
   try {
-    const phoneNumber = parsePhoneNumberFromString(phone, defaultCountry);
+    const phoneNumber = libphonenumber.parsePhoneNumberFromString(phone, defaultCountry);
     if (phoneNumber && phoneNumber.isValid()) {
       return phoneNumber.format('E.164');
     }
