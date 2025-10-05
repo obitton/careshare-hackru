@@ -40,6 +40,13 @@ app.use(cors({
   }
 }));
 
+// Root handlers for platform health checks and convenience
+app.head('/', (_req, res) => {
+  res.status(200).end();
+});
+app.get('/', (_req, res) => {
+  res.status(200).json({ ok: true, service: 'CareShare API' });
+});
 
 // Capture raw body for HMAC verification (e.g., ElevenLabs webhook)
 app.use(express.json({ verify: (req: any, _res, buf) => { req.rawBody = buf; } }));
@@ -658,24 +665,26 @@ app.post('/api/agent/outbound-call-test', async (req, res) => {
   if (!agentId) missing.push('ELEVENLABS_AGENT_ID');
   if (!phoneNumberId) missing.push('AGENT_PHONE_NUMBER_ID');
   if (missing.length) {
+    console.error('[XI] Missing env vars:', missing);
     return res.status(200).json({ success: false, error: { code: 'MISSING_ENV', message: 'Missing required env vars', details: missing } });
   }
 
   try {
-    const response = await fetch('https://api.elevenlabs.io/v1/convai/twilio/outbound-call', {
+    const url = 'https://api.elevenlabs.io/v1/convai/twilio/outbound-call';
+    const payload = { agent_id: agentId, agent_phone_number_id: phoneNumberId, to_number: toNumber };
+    console.log('[XI] outbound-call-test -> request', { url, payload, headers: { 'xi-api-key': `***${String(xiApiKey).slice(-4)}` } });
+    const response = await fetch(url, {
       method: 'POST',
       headers: {
         'xi-api-key': xiApiKey as string,
         'Content-Type': 'application/json',
       },
-      body: JSON.stringify({
-        agent_id: agentId,
-        agent_phone_number_id: phoneNumberId,
-        to_number: toNumber,
-      }),
+      body: JSON.stringify(payload),
     });
 
     const text = await response.text();
+    console.log('[XI] outbound-call-test <- response', { ok: response.ok, status: response.status, bodyPreview: text.slice(0, 2000) });
+
     let data: any;
     try { data = JSON.parse(text); } catch { data = { raw: text }; }
 
@@ -705,7 +714,10 @@ app.post('/api/agent/outbound-call', async (req, res) => {
   if (!xiApiKey) missing.push('XI-API-KEY or XI_API_KEY or ELEVENLABS_API_KEY');
   if (!agentId) missing.push('ELEVENLABS_AGENT_ID');
   if (!phoneNumberId) missing.push('AGENT_PHONE_NUMBER_ID');
-  if (missing.length) return res.status(200).json({ success: false, error: { code: 'MISSING_ENV', message: 'Missing required env vars', details: missing } });
+  if (missing.length) {
+    console.error('[XI] Missing env vars:', missing);
+    return res.status(200).json({ success: false, error: { code: 'MISSING_ENV', message: 'Missing required env vars', details: missing } });
+  }
 
   const { conversation_id, volunteer_id, to_number } = parsed.data;
   try {
@@ -715,12 +727,16 @@ app.post('/api/agent/outbound-call', async (req, res) => {
     if (!volunteer.rows[0]) return res.status(200).json({ success: false, error: { code: 'NOT_FOUND', message: 'Volunteer not found' } });
 
     const dialNumber = to_number || volunteer.rows[0].phone_number;
-    const response = await fetch('https://api.elevenlabs.io/v1/convai/twilio/outbound-call', {
+    const url = 'https://api.elevenlabs.io/v1/convai/twilio/outbound-call';
+    const payload = { agent_id: agentId, agent_phone_number_id: phoneNumberId, to_number: dialNumber };
+    console.log('[XI] outbound-call -> request', { url, payload, headers: { 'xi-api-key': `***${String(xiApiKey).slice(-4)}` } });
+    const response = await fetch(url, {
       method: 'POST',
       headers: { 'xi-api-key': xiApiKey as string, 'Content-Type': 'application/json' },
-      body: JSON.stringify({ agent_id: agentId, agent_phone_number_id: phoneNumberId, to_number: dialNumber }),
+      body: JSON.stringify(payload),
     });
     const text = await response.text();
+    console.log('[XI] outbound-call <- response', { ok: response.ok, status: response.status, bodyPreview: text.slice(0, 2000) });
     let data: any; try { data = JSON.parse(text); } catch { data = { raw: text }; }
 
     // record a pending call log entry
@@ -756,7 +772,10 @@ app.post('/api/agent/outbound-callback-senior', async (req, res) => {
   if (!xiApiKey) missing.push('XI-API-KEY or XI_API_KEY or ELEVENLABS_API_KEY');
   if (!agentId) missing.push('ELEVENLABS_AGENT_ID');
   if (!phoneNumberId) missing.push('AGENT_PHONE_NUMBER_ID');
-  if (missing.length) return res.status(200).json({ success: false, error: { code: 'MISSING_ENV', message: 'Missing required env vars', details: missing } });
+  if (missing.length) {
+    console.error('[XI] Missing env vars:', missing);
+    return res.status(200).json({ success: false, error: { code: 'MISSING_ENV', message: 'Missing required env vars', details: missing } });
+  }
 
   const { conversation_id, senior_id, to_number } = parsed.data;
   try {
@@ -765,17 +784,21 @@ app.post('/api/agent/outbound-callback-senior', async (req, res) => {
     if (!c) return res.status(200).json({ success: false, error: { code: 'NOT_FOUND', message: 'Conversation not found' } });
     const sid = senior_id ?? c.senior_id;
     if (!sid) return res.status(200).json({ success: false, error: { code: 'NO_SENIOR', message: 'Senior id/number required' } });
-    const sres = await pool.query('SELECT id, first_name, last_name, phone_number FROM seniors WHERE id = $1', [sid]);
-    const s = sres.rows[0];
-    if (!s) return res.status(200).json({ success: false, error: { code: 'NOT_FOUND', message: 'Senior not found' } });
-    const dialNumber = to_number || s.phone_number;
+    const s = await pool.query('SELECT id, first_name, last_name, phone_number FROM seniors WHERE id = $1', [sid]);
+    const sres = s.rows[0];
+    if (!sres) return res.status(200).json({ success: false, error: { code: 'NOT_FOUND', message: 'Senior not found' } });
+    const dialNumber = to_number || sres.phone_number;
 
-    const response = await fetch('https://api.elevenlabs.io/v1/convai/twilio/outbound-call', {
+    const url = 'https://api.elevenlabs.io/v1/convai/twilio/outbound-call';
+    const payload = { agent_id: agentId, agent_phone_number_id: phoneNumberId, to_number: dialNumber };
+    console.log('[XI] outbound-callback-senior -> request', { url, payload, headers: { 'xi-api-key': `***${String(xiApiKey).slice(-4)}` } });
+    const response = await fetch(url, {
       method: 'POST',
       headers: { 'xi-api-key': xiApiKey as string, 'Content-Type': 'application/json' },
-      body: JSON.stringify({ agent_id: agentId, agent_phone_number_id: phoneNumberId, to_number: dialNumber }),
+      body: JSON.stringify(payload),
     });
     const text = await response.text();
+    console.log('[XI] outbound-callback-senior <- response', { ok: response.ok, status: response.status, bodyPreview: text.slice(0, 2000) });
     let data: any; try { data = JSON.parse(text); } catch { data = { raw: text }; }
 
     await pool.query(
