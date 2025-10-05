@@ -464,17 +464,29 @@ app.post('/api/agent/start-inbound-conversation', async (req, res) => {
         caller_phone_number: normalized,
         request_details: d.request_details,
         matched_skill: matchedSkill,
-        nearby_volunteers: volunteers as any,
+        nearby_volunteers: volunteers as any, // Storing for record-keeping
         status: 'OPEN',
       },
     });
+
+    // --- NEW LOGIC: Automatically dispatch outbound calls ---
+    if (volunteers.length > 0) {
+      console.log(`[Flow] Found ${volunteers.length} volunteers. Dispatching calls...`);
+      for (const vol of volunteers) {
+        // No await, dispatch in parallel
+        dispatchOutboundCall(insert.id, vol.id, vol.phone_number);
+      }
+    } else {
+      console.log('[Flow] No volunteers found to dispatch calls to.');
+    }
 
     res.status(201).json({
       success: true, data: {
         conversation_id: insert.id,
         senior: seniorRow,
         matched_skill: matchedSkill,
-        volunteers,
+        // No longer returning volunteers to the agent, backend is handling it
+        message: `Found ${volunteers.length} volunteers. Outbound calls are being dispatched.`,
       }
     });
   } catch (e: any) {
@@ -688,94 +700,6 @@ app.post('/api/agent/outbound-call-test', async (req, res) => {
   }
 });
 
-// Conversation-driven outbound call to a volunteer
-const outboundCallSchema = z.object({
-  conversation_id: z.coerce.number().int(),
-  volunteer_id: z.coerce.number().int(),
-  to_number: z.string().optional(),
-});
-
-app.post('/api/agent/outbound-call', async (req, res) => {
-  console.log('AGENT TOOL: outboundCall (conversation-driven)');
-  const parsed = outboundCallSchema.safeParse(req.body);
-  if (!parsed.success) return res.status(200).json({ success: false, error: { code: 'INVALID_BODY', message: 'Invalid request body', details: parsed.error.issues } });
-
-  const xiApiKey = (process.env as any)['XI-API-KEY'] || process.env.XI_API_KEY || process.env.ELEVENLABS_API_KEY;
-  const agentId = process.env.ELEVENLABS_AGENT_ID;
-  const phoneNumberId = process.env.AGENT_PHONE_NUMBER_ID;
-  const missing: string[] = [];
-  if (!xiApiKey) missing.push('XI-API-KEY or XI_API_KEY or ELEVENLABS_API_KEY');
-  if (!agentId) missing.push('ELEVENLABS_AGENT_ID');
-  if (!phoneNumberId) missing.push('AGENT_PHONE_NUMBER_ID');
-  if (missing.length) {
-    console.error('[XI] Missing env vars:', missing);
-    return res.status(200).json({ success: false, error: { code: 'MISSING_ENV', message: 'Missing required env vars', details: missing } });
-  }
-
-  const { conversation_id, volunteer_id, to_number } = parsed.data;
-  try {
-    const conv = await prisma.inboundConversation.findUnique({ where: { id: conversation_id } });
-    if (!conv) return res.status(200).json({ success: false, error: { code: 'NOT_FOUND', message: 'Conversation not found' } });
-    const volunteer = await prisma.volunteer.findUnique({ where: { id: volunteer_id }, select: { id: true, first_name: true, last_name: true, phone_number: true } });
-    if (!volunteer) return res.status(200).json({ success: false, error: { code: 'NOT_FOUND', message: 'Volunteer not found' } });
-
-    const dialNumber = to_number || volunteer.phone_number;
-
-    // Dynamically build the prompt for this specific volunteer call
-    const senior = conv.senior_id ? await prisma.senior.findUnique({ where: { id: conv.senior_id } }) : null;
-    const seniorName = senior ? `${senior.first_name ?? ''} ${senior.last_name ?? ''}`.trim() : 'a senior';
-    
-    const systemMessage = [
-      'You are the CareShare assistant calling a volunteer.',
-      `You are calling on behalf of ${seniorName}.`,
-      `The specific request is: "${conv.request_details}".`,
-      'Your goal is to clearly explain the task and ask if they are available and willing to help. Be clear and concise.',
-      'You MUST record the result with logVolunteerCall before finishing.'
-    ].join(' ');
-    const firstMessage = `Hello, this is CareShare calling on behalf of ${seniorName} with a volunteer opportunity.`;
-
-    const url = 'https://api.elevenlabs.io/v1/convai/twilio/outbound-call';
-    const payload = {
-      agent_id: agentId,
-      agent_phone_number_id: phoneNumberId,
-      to_number: dialNumber,
-      conversation_config_override: {
-        agent: {
-          prompt: { prompt: systemMessage },
-          first_message: firstMessage,
-          language: 'en',
-        },
-      },
-    };
-    console.log('[XI] outbound-call -> request', { url, payload: { ...payload, conversation_config_override: '...' }, headers: { 'xi-api-key': `***${String(xiApiKey).slice(-4)}` } });
-    const response = await fetch(url, {
-      method: 'POST',
-      headers: { 'xi-api-key': xiApiKey as string, 'Content-Type': 'application/json' },
-      body: JSON.stringify(payload),
-    });
-    const text = await response.text();
-    console.log('[XI] outbound-call <- response', { ok: response.ok, status: response.status, bodyPreview: text.slice(0, 2000) });
-    let data: any; try { data = JSON.parse(text); } catch { data = { raw: text }; }
-
-    // record a pending call log entry
-    await prisma.conversationCall.create({
-      data: {
-        conversation_id,
-        volunteer_id,
-        outcome: 'PENDING',
-        notes: null,
-        call_sid: data?.callSid ?? null,
-        role: 'VOLUNTEER',
-      }
-    });
-
-    return res.status(200).json({ success: response.ok, upstream_status: response.status, data });
-  } catch (e: any) {
-    console.error('outbound-call (conversation) error:', e);
-    return res.status(200).json({ success: false, error: { code: 'INTERNAL_ERROR', message: e.message } });
-  }
-});
-
 // Outbound senior callback (dials the senior back)
 const outboundSeniorSchema = z.object({
   conversation_id: z.coerce.number().int(),
@@ -895,41 +819,41 @@ app.post('/api/agent/personalization', async (req: any, res) => {
   if (!parsed.success) return res.status(200).json({ success: false, error: { code: 'INVALID_BODY', message: 'Invalid request body', details: parsed.error.issues } });
   const d = parsed.data;
   try {
+    // --- NEW STATEFUL LOGIC ---
+    // Check if this is a known outbound call by looking up the call_sid
+    const callRecord = d.call_sid ? await prisma.conversationCall.findFirst({ where: { call_sid: d.call_sid } }) : null;
+    
+    let mode = 'INBOUND'; // Default to inbound
+    if (callRecord) {
+      mode = callRecord.role || 'VOLUNTEER_OUTBOUND'; // It's an outbound call we initiated
+    }
+    
     const normalizedCaller = normalizePhoneNumber(d.caller_id) || d.caller_id;
     let seniorRow: any = null;
-    try {
-      seniorRow = await prisma.senior.findFirst({
-        where: { phone_number: normalizedCaller },
-        select: { id: true, first_name: true, last_name: true, street_address: true, city: true, state: true, zip_code: true },
-      });
-    } catch { }
-
     let conversation: any = null;
-    if (d.conversation_id) {
-      conversation = await prisma.inboundConversation.findUnique({ where: { id: d.conversation_id } });
-    }
-
     let volunteer: any = null;
-    if (d.volunteer_id) {
-      volunteer = await prisma.volunteer.findUnique({ where: { id: d.volunteer_id }, select: { id: true, first_name: true, last_name: true, phone_number: true, zip_code: true } });
-    }
 
-    // Auto-derive mode and context from call_sid if available
-    let mode = d.mode || 'INBOUND';
-    let conversationFromCall: any = null;
-    let volunteerFromCall: any = null;
-    try {
-      const ccall = await prisma.conversationCall.findFirst({ where: { call_sid: d.call_sid } });
-      if (ccall) {
-        conversationFromCall = await prisma.inboundConversation.findUnique({ where: { id: ccall.conversation_id } });
-        if (ccall.role === 'VOLUNTEER') mode = 'VOLUNTEER_OUTBOUND';
-        if (ccall.role === 'SENIOR_CALLBACK') mode = 'SENIOR_CALLBACK';
-        volunteerFromCall = await prisma.volunteer.findUnique({ where: { id: ccall.volunteer_id }, select: { id: true, first_name: true, last_name: true, phone_number: true, zip_code: true } });
+    if (mode === 'INBOUND') {
+      try {
+        seniorRow = await prisma.senior.findFirst({
+          where: { phone_number: normalizedCaller },
+          select: { id: true, first_name: true, last_name: true, street_address: true, city: true, state: true, zip_code: true },
+        });
+      } catch { }
+    } else { // VOLUNTEER_OUTBOUND or SENIOR_CALLBACK
+      if (callRecord) {
+        conversation = await prisma.inboundConversation.findUnique({ where: { id: callRecord.conversation_id } });
+        if (conversation?.senior_id) {
+          seniorRow = await prisma.senior.findUnique({ where: { id: conversation.senior_id } });
+        }
+        if (callRecord.volunteer_id) {
+          volunteer = await prisma.volunteer.findUnique({ where: { id: callRecord.volunteer_id }, select: { id: true, first_name: true, last_name: true, phone_number: true, zip_code: true } });
+        }
       }
-    } catch { }
-
-    const modeConversation = conversationFromCall || (d.conversation_id ? (await prisma.inboundConversation.findUnique({ where: { id: d.conversation_id } })) : null) || null;
-    const modeVolunteer = volunteerFromCall || (d.volunteer_id ? (await prisma.volunteer.findUnique({ where: { id: d.volunteer_id }, select: { id: true, first_name: true, last_name: true, phone_number: true, zip_code: true } })) : null) || null;
+    }
+    
+    const modeConversation = conversation;
+    const modeVolunteer = volunteer;
     const modePrompts: Record<string, string> = {
       INBOUND: [
         'You are the CareShare assistant for inbound senior calls.',
@@ -1047,6 +971,73 @@ app.post('/api/agent/personalization', async (req: any, res) => {
     return res.status(200).json({ success: false, error: { code: 'INTERNAL_ERROR', message: e.message } });
   }
 });
+
+
+// ===============================================================================================
+// INTERNAL-ONLY: Dispatches an outbound call via ElevenLabs. Not an agent tool.
+// ===============================================================================================
+async function dispatchOutboundCall(conversation_id: number, volunteer_id: number, to_number: string | null) {
+  const xiApiKey = (process.env as any)['XI-API-KEY'] || process.env.XI_API_KEY || process.env.ELEVENLABS_API_KEY;
+  const agentId = process.env.ELEVENLABS_AGENT_ID;
+  const phoneNumberId = process.env.AGENT_PHONE_NUMBER_ID;
+  const missing: string[] = [];
+  if (!xiApiKey) missing.push('XI-API-KEY or XI_API_KEY or ELEVENLABS_API_KEY');
+  if (!agentId) missing.push('ELEVENLABS_AGENT_ID');
+  if (!phoneNumberId) missing.push('AGENT_PHONE_NUMBER_ID');
+
+  if (missing.length) {
+    console.error('[XI] dispatchOutboundCall missing env vars:', missing);
+    return; // Cannot proceed
+  }
+
+  try {
+    const volunteer = await prisma.volunteer.findUnique({ where: { id: volunteer_id }, select: { id: true, phone_number: true } });
+    if (!volunteer) {
+      console.error(`[XI] dispatchOutboundCall could not find volunteer ${volunteer_id}`);
+      return;
+    }
+
+    const dialNumber = to_number || volunteer.phone_number;
+    if (!dialNumber) {
+      console.error(`[XI] dispatchOutboundCall volunteer ${volunteer_id} has no phone number.`);
+      return;
+    }
+
+    const url = 'https://api.elevenlabs.io/v1/convai/twilio/outbound-call';
+    const payload = {
+      agent_id: agentId,
+      agent_phone_number_id: phoneNumberId,
+      to_number: dialNumber,
+    };
+    console.log('[XI] dispatchOutboundCall -> request', { url, payload: { ...payload, agent_id: '...' }, headers: { 'xi-api-key': `***${String(xiApiKey).slice(-4)}` } });
+
+    const response = await fetch(url, {
+      method: 'POST',
+      headers: { 'xi-api-key': xiApiKey as string, 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    });
+
+    const text = await response.text();
+    console.log('[XI] dispatchOutboundCall <- response', { ok: response.ok, status: response.status, bodyPreview: text.slice(0, 2000) });
+    const data: any = JSON.parse(text);
+
+    if (response.ok && data.callSid) {
+      await prisma.conversationCall.create({
+        data: {
+          conversation_id,
+          volunteer_id,
+          outcome: 'INITIATED',
+          call_sid: data.callSid,
+          role: 'VOLUNTEER',
+        }
+      });
+      console.log(`[XI] Logged initiated call for conversation ${conversation_id} to volunteer ${volunteer_id} with SID ${data.callSid}`);
+    }
+  } catch (e: any) {
+    console.error('[XI] dispatchOutboundCall failed:', e);
+  }
+}
+
 
 // 2b) UI compatibility routes (used by existing SeniorPortal)
 app.get('/api/volunteers', async (_req, res) => {
