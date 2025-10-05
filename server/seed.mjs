@@ -63,6 +63,48 @@ async function main() {
     ],
   });
   console.log(`Created ${volunteers.count} volunteers`);
+
+  // Seed Skills
+  await prisma.skill.deleteMany({});
+  const skills = await prisma.skill.createMany({
+    data: [
+      { name: 'Driving' },
+      { name: 'Grocery Shopping' },
+      { name: 'Tech Help' },
+      { name: 'Gardening' },
+      { name: 'Companionship' },
+    ],
+  });
+  console.log(`Created ${skills.count} skills`);
+
+  // Link skills to volunteers
+  const driving = await prisma.skill.findUnique({ where: { name: 'Driving' } });
+  const shopping = await prisma.skill.findUnique({ where: { name: 'Grocery Shopping' } });
+  const tech = await prisma.skill.findUnique({ where: { name: 'Tech Help' } });
+  const gardening = await prisma.skill.findUnique({ where: { name: 'Gardening' } });
+  const companionship = await prisma.skill.findUnique({ where: { name: 'Companionship' } });
+  const david = await prisma.volunteer.findFirst({ where: { first_name: 'David' } });
+  const maria = await prisma.volunteer.findFirst({ where: { first_name: 'Maria' } });
+
+  await prisma.volunteerSkill.deleteMany({});
+  if (david && gardening && companionship) {
+    await prisma.volunteerSkill.createMany({
+      data: [
+        { volunteer_id: david.id, skill_id: gardening.id },
+        { volunteer_id: david.id, skill_id: companionship.id },
+      ],
+    });
+  }
+  if (maria && driving && shopping && tech) {
+    await prisma.volunteerSkill.createMany({
+      data: [
+        { volunteer_id: maria.id, skill_id: driving.id },
+        { volunteer_id: maria.id, skill_id: shopping.id },
+        { volunteer_id: maria.id, skill_id: tech.id },
+      ],
+    });
+  }
+  console.log('Linked skills to volunteers.');
 }
 
 main()

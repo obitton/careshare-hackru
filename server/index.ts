@@ -187,9 +187,12 @@ const SKILL_KEYWORDS: Record<string, string> = {
 };
 
 function parseRequestForSkill(requestDetails: string): string | null {
-  const words = requestDetails.toLowerCase().split(/\s+/);
-  for (const word of words) {
-    if (SKILL_KEYWORDS[word]) return SKILL_KEYWORDS[word];
+  const lowerCaseRequest = requestDetails.toLowerCase();
+  for (const [keyword, skill] of Object.entries(SKILL_KEYWORDS)) {
+    // Use word boundaries to avoid partial matches (e.g., 'car' in 'care')
+    if (new RegExp(`\\b${keyword}\\b`).test(lowerCaseRequest)) {
+      return skill;
+    }
   }
   return null;
 }
@@ -238,13 +241,17 @@ app.post('/api/agent/find-and-parse', async (req, res) => {
 
     console.log(` -> Parsing request for skill: "${request_details}"`);
     const skillName = parseRequestForSkill(request_details);
-    if (!skillName) return res.status(200).json({ success: false, error: { code: 'NO_SKILL', message: 'Could not determine skill' } });
-    console.log(` -> Found skill: ${skillName}`);
+    if (skillName) {
+      console.log(` -> Found skill: ${skillName}`);
+    } else {
+      console.log(' -> No specific skill found, searching for all volunteers.');
+    }
 
     const volunteers = await prisma.volunteer.findMany({
       where: {
         is_active: true,
-        skills: { some: { skill: { name: skillName } } },
+        // Conditionally apply skill filter ONLY if a skill was found
+        ...(skillName && { skills: { some: { skill: { name: skillName } } } }),
       },
       select: { id: true, first_name: true, last_name: true, phone_number: true, zip_code: true },
     });
@@ -253,7 +260,7 @@ app.post('/api/agent/find-and-parse', async (req, res) => {
     res.status(200).json({
       success: true, data: {
         senior,
-        matched_skill: skillName,
+        matched_skill: skillName, // Will be null if no skill was found
         potential_volunteers: volunteers,
       }
     });
