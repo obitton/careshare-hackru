@@ -329,7 +329,7 @@ const upsertSeniorSchema = z.object({
   first_name: z.string().min(1).optional(),
   last_name: z.string().min(1).optional(),
   phone_number: z.string(),
-  email: z.string().email().optional(),
+  email: z.string().optional(),
   street_address: z.string().optional(),
   city: z.string().optional(),
   state: z.string().optional(),
@@ -343,50 +343,32 @@ app.post('/api/agent/create-senior', async (req, res) => {
   const normalized = normalizePhoneNumber(parsed.data.phone_number);
   if (!normalized) return res.status(200).json({ success: false, error: { code: 'INVALID_PHONE', message: 'Invalid phone number format.' } });
   try {
-    const existing = await pool.query('SELECT * FROM seniors WHERE phone_number = $1', [normalized]);
     const d = parsed.data;
-    if (existing.rows[0]) {
-      const { rows } = await pool.query(
-        `UPDATE seniors SET
-           first_name = COALESCE($2, first_name),
-           last_name = COALESCE($3, last_name),
-           email = COALESCE($4, email),
-           street_address = COALESCE($5, street_address),
-           city = COALESCE($6, city),
-           state = COALESCE($7, state),
-           zip_code = COALESCE($8, zip_code)
-         WHERE phone_number = $1
-         RETURNING *`,
-        [
-          normalized,
-          d.first_name ?? null,
-          d.last_name ?? null,
-          d.email ?? null,
-          d.street_address ?? null,
-          d.city ?? null,
-          d.state ?? null,
-          d.zip_code ?? null,
-        ]
-      );
-      return res.status(200).json({ success: true, data: rows[0], upserted: 'updated' });
-    } else {
-      const { rows } = await pool.query(
-        `INSERT INTO seniors (first_name, last_name, phone_number, email, street_address, city, state, zip_code, is_active)
-         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,true)
-         RETURNING *`,
-        [
-          d.first_name ?? null,
-          d.last_name ?? null,
-          normalized,
-          d.email ?? null,
-          d.street_address ?? null,
-          d.city ?? null,
-          d.state ?? null,
-          d.zip_code ?? null,
-        ]
-      );
-      return res.status(201).json({ success: true, data: rows[0], upserted: 'created' });
-    }
+    const emailClean = d.email && d.email.trim() ? d.email.trim() : null;
+    const upserted = await pool.query(
+      `INSERT INTO seniors (first_name, last_name, phone_number, email, street_address, city, state, zip_code, is_active)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,true)
+       ON CONFLICT (phone_number) DO UPDATE SET
+       first_name = COALESCE($2, first_name),
+       last_name = COALESCE($3, last_name),
+       email = COALESCE($4, email),
+       street_address = COALESCE($5, street_address),
+       city = COALESCE($6, city),
+       state = COALESCE($7, state),
+       zip_code = COALESCE($8, zip_code)
+       RETURNING *`,
+      [
+        d.first_name ?? null,
+        d.last_name ?? null,
+        normalized,
+        emailClean,
+        d.street_address ?? null,
+        d.city ?? null,
+        d.state ?? null,
+        d.zip_code ?? null,
+      ]
+    );
+    return res.status(200).json({ success: true, data: upserted.rows[0], upserted: 'created_or_updated' });
   } catch (e: any) {
     console.error('create-senior error:', e);
     res.status(200).json({ success: false, error: { code: 'INTERNAL_ERROR', message: e.message } });
@@ -400,7 +382,7 @@ const startInboundSchema = z.object({
   create_if_missing: z.boolean().optional(),
   first_name: z.string().optional(),
   last_name: z.string().optional(),
-  email: z.string().email().optional(),
+  email: z.string().optional(),
   street_address: z.string().optional(),
   city: z.string().optional(),
   state: z.string().optional(),
@@ -418,23 +400,21 @@ app.post('/api/agent/start-inbound-conversation', async (req, res) => {
   if (!normalized) return res.status(200).json({ success: false, error: { code: 'INVALID_PHONE', message: 'Invalid phone number format.' } });
 
   try {
-    let seniorRow: any = null;
-    const existing = await pool.query('SELECT * FROM seniors WHERE phone_number = $1', [normalized]);
-    if (existing.rows[0]) {
-      seniorRow = existing.rows[0];
-    } else if (d.create_if_missing || d.first_name || d.last_name || d.zip_code) {
-      const ins = await pool.query(
+    let seniorRow: any = await pool.query('SELECT * FROM seniors WHERE phone_number = $1', [normalized]);
+
+    if (!seniorRow.rows[0] && (d.create_if_missing || d.first_name || d.last_name || d.zip_code)) {
+      const emailClean = d.email && d.email.trim() ? d.email.trim() : null;
+      seniorRow = await pool.query(
         `INSERT INTO seniors (first_name,last_name,phone_number,email,street_address,city,state,zip_code,is_active)
          VALUES ($1,$2,$3,$4,$5,$6,$7,$8,true)
          RETURNING *`,
-        [d.first_name ?? null, d.last_name ?? null, normalized, d.email ?? null, d.street_address ?? null, d.city ?? null, d.state ?? null, d.zip_code ?? null]
+        [d.first_name ?? null, d.last_name ?? null, normalized, emailClean, d.street_address ?? null, d.city ?? null, d.state ?? null, d.zip_code ?? null]
       );
-      seniorRow = ins.rows[0];
     }
 
     const matchedSkill = parseRequestForSkill(d.request_details);
 
-    const searchZip = d.zip ?? seniorRow?.zip_code ?? null;
+    const searchZip = d.zip ?? seniorRow?.rows[0]?.zip_code ?? null;
     const radius = d.radius ?? 10;
     let zips: string[] | null = null;
     if (searchZip) {
@@ -489,12 +469,12 @@ app.post('/api/agent/start-inbound-conversation', async (req, res) => {
     const insert = await pool.query(
       `INSERT INTO inbound_conversations (senior_id, caller_phone_number, request_details, matched_skill, nearby_volunteers, status)
        VALUES ($1,$2,$3,$4,$5,'OPEN') RETURNING *`,
-      [seniorRow?.id ?? null, normalized, d.request_details, matchedSkill ?? null, JSON.stringify(volunteers)]
+      [seniorRow.rows[0]?.id ?? null, normalized, d.request_details, matchedSkill ?? null, JSON.stringify(volunteers)]
     );
 
     res.status(201).json({ success: true, data: {
       conversation_id: insert.rows[0].id,
-      senior: seniorRow,
+      senior: seniorRow.rows[0],
       matched_skill: matchedSkill,
       volunteers,
     }});
