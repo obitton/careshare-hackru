@@ -721,7 +721,16 @@ app.post('/api/agent/outbound-call', async (req, res) => {
 
     const dialNumber = to_number || volunteer.phone_number;
     const url = 'https://api.elevenlabs.io/v1/convai/twilio/outbound-call';
-    const payload = { agent_id: agentId, agent_phone_number_id: phoneNumberId, to_number: dialNumber };
+    const payload = {
+      agent_id: agentId,
+      agent_phone_number_id: phoneNumberId,
+      to_number: dialNumber,
+      conversation_initiation_client_data: {
+        conversation_id: conv.id,
+        volunteer_id: volunteer.id,
+        mode: 'VOLUNTEER_OUTBOUND',
+      },
+    };
     console.log('[XI] outbound-call -> request', { url, payload, headers: { 'xi-api-key': `***${String(xiApiKey).slice(-4)}` } });
     const response = await fetch(url, {
       method: 'POST',
@@ -780,14 +789,21 @@ app.post('/api/agent/outbound-callback-senior', async (req, res) => {
     const c = await prisma.inboundConversation.findUnique({ where: { id: conversation_id } });
     const conv = c;
     if (!conv) return res.status(200).json({ success: false, error: { code: 'NOT_FOUND', message: 'Conversation not found' } });
-    const sid = senior_id ?? conv.senior_id;
-    if (!sid) return res.status(200).json({ success: false, error: { code: 'NO_SENIOR', message: 'Senior id/number required' } });
-    const s = await prisma.senior.findUnique({ where: { id: sid }, select: { id: true, first_name: true, last_name: true, phone_number: true } });
+    const s = await prisma.senior.findUnique({ where: { id: senior_id }, select: { id: true, first_name: true, last_name: true, phone_number: true } });
     if (!s) return res.status(200).json({ success: false, error: { code: 'NOT_FOUND', message: 'Senior not found' } });
     const dialNumber = to_number || s.phone_number;
 
     const url = 'https://api.elevenlabs.io/v1/convai/twilio/outbound-call';
-    const payload = { agent_id: agentId, agent_phone_number_id: phoneNumberId, to_number: dialNumber };
+    const payload = {
+      agent_id: agentId,
+      agent_phone_number_id: phoneNumberId,
+      to_number: dialNumber,
+      conversation_initiation_client_data: {
+        conversation_id: c.id,
+        senior_id: s.id,
+        mode: 'SENIOR_CALLBACK',
+      },
+    };
     console.log('[XI] outbound-callback-senior -> request', { url, payload, headers: { 'xi-api-key': `***${String(xiApiKey).slice(-4)}` } });
     const response = await fetch(url, {
       method: 'POST',
@@ -936,11 +952,11 @@ app.post('/api/agent/personalization', async (req: any, res) => {
     };
     const modeFirstMessages: Record<string, string> = {
       INBOUND: 'Hello! How can I help you today?',
-      VOLUNTEER_OUTBOUND: 'Hello, this is CareShare. I\'m calling regarding a request we received.',
+      VOLUNTEER_OUTBOUND: 'Hello, this is CareShare calling on behalf of a senior in your community.',
       SENIOR_CALLBACK: 'Hello again, this is CareShare. I have some options for you.',
     };
     let systemMessage = modePrompts[mode] || modePrompts.INBOUND;
-    const firstMessage = modeFirstMessages[mode] || modeFirstMessages.INBOUND;
+    let firstMessage = modeFirstMessages[mode] || modeFirstMessages.INBOUND;
 
     // Enrich system message with available context to reduce need for many variables
     const seniorName = seniorRow ? `${seniorRow.first_name ?? ''} ${seniorRow.last_name ?? ''}`.trim() : null;
@@ -958,10 +974,21 @@ app.post('/api/agent/personalization', async (req: any, res) => {
     } else if (mode === 'VOLUNTEER_OUTBOUND') {
       const volName = volunteer ? `${volunteer.first_name ?? ''} ${volunteer.last_name ?? ''}`.trim() : null;
       const extras: string[] = [];
-      if (seniorName) extras.push(`Senior: ${seniorName}.`);
+      const seniorForCall = modeConversation?.senior_id ? (await prisma.senior.findUnique({ where: { id: modeConversation.senior_id } })) : null;
+      const seniorNameForCall = seniorForCall ? `${seniorForCall.first_name ?? ''} ${seniorForCall.last_name ?? ''}`.trim() : seniorName;
+
+      if (seniorNameForCall) {
+        extras.push(`You are calling on behalf of a senior named ${seniorNameForCall}.`);
+        firstMessage = `Hello, this is CareShare calling on behalf of a senior in your community, ${seniorNameForCall}.`;
+      }
       const volName2 = modeVolunteer ? `${modeVolunteer.first_name ?? ''} ${modeVolunteer.last_name ?? ''}`.trim() : volName;
-      if (volName2) extras.push(`Volunteer: ${volName2}.`);
-      if (modeConversation?.matched_skill) extras.push(`Skill/Task: ${modeConversation.matched_skill}.`);
+      if (volName2) extras.push(`Your name is ${volName2}.`);
+      const taskDetail = modeConversation?.request_details;
+      if (taskDetail) extras.push(`The specific request is: "${taskDetail}".`);
+      const skillDetail = modeConversation?.matched_skill;
+      if (skillDetail) extras.push(`This task requires the skill: "${skillDetail}".`);
+      
+      extras.push('Your goal is to ask if they are available and willing to help with this specific task. Be clear and concise.');
       systemMessage = `${systemMessage} ${extras.join(' ')}`.trim();
     } else if (mode === 'SENIOR_CALLBACK') {
       const extras: string[] = [];
