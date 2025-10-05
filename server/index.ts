@@ -980,15 +980,18 @@ app.post('/api/agent/personalization', async (req: any, res) => {
       if (seniorNameForCall) {
         extras.push(`You are calling on behalf of a senior named ${seniorNameForCall}.`);
         firstMessage = `Hello, this is CareShare calling on behalf of a senior in your community, ${seniorNameForCall}.`;
+      } else {
+        firstMessage = `Hello, this is CareShare calling with an opportunity to help a senior in your community.`;
       }
+
       const volName2 = modeVolunteer ? `${modeVolunteer.first_name ?? ''} ${modeVolunteer.last_name ?? ''}`.trim() : volName;
-      if (volName2) extras.push(`Your name is ${volName2}.`);
+      if (volName2) extras.push(`Please introduce yourself as ${volName2}.`);
       const taskDetail = modeConversation?.request_details;
       if (taskDetail) extras.push(`The specific request is: "${taskDetail}".`);
       const skillDetail = modeConversation?.matched_skill;
-      if (skillDetail) extras.push(`This task requires the skill: "${skillDetail}".`);
+      if (skillDetail) extras.push(`This task is related to: "${skillDetail}".`);
       
-      extras.push('Your goal is to ask if they are available and willing to help with this specific task. Be clear and concise.');
+      extras.push('Your goal is to clearly explain the task and ask if they are available and willing to help. Be clear and concise.');
       systemMessage = `${systemMessage} ${extras.join(' ')}`.trim();
     } else if (mode === 'SENIOR_CALLBACK') {
       const extras: string[] = [];
