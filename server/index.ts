@@ -827,6 +827,14 @@ app.post('/api/agent/personalization', async (req: any, res) => {
     if (callRecord) {
       mode = callRecord.role || 'VOLUNTEER_OUTBOUND'; // It's an outbound call we initiated
     }
+
+    // Fallback: if call_sid not found yet, detect outbound by called_number matching a volunteer
+    if (!callRecord && d.called_number) {
+      const volunteerMatch = await prisma.volunteer.findFirst({ where: { phone_number: d.called_number } });
+      if (volunteerMatch) {
+        mode = 'VOLUNTEER_OUTBOUND';
+      }
+    }
     
     const normalizedCaller = normalizePhoneNumber(d.caller_id) || d.caller_id;
     let seniorRow: any = null;
@@ -848,6 +856,16 @@ app.post('/api/agent/personalization', async (req: any, res) => {
         }
         if (callRecord.volunteer_id) {
           volunteer = await prisma.volunteer.findUnique({ where: { id: callRecord.volunteer_id }, select: { id: true, first_name: true, last_name: true, phone_number: true, zip_code: true } });
+        }
+      } else {
+        // Fallback: use latest open conversation for context when sid not yet saved
+        conversation = await prisma.inboundConversation.findFirst({ where: { status: 'OPEN' }, orderBy: { id: 'desc' } });
+        if (conversation?.senior_id) {
+          seniorRow = await prisma.senior.findUnique({ where: { id: conversation.senior_id } });
+        }
+        // Best-effort volunteer match by called_number
+        if (!volunteer && d.called_number) {
+          volunteer = await prisma.volunteer.findFirst({ where: { phone_number: d.called_number }, select: { id: true, first_name: true, last_name: true, phone_number: true, zip_code: true } });
         }
       }
     }
