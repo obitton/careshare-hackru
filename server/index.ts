@@ -83,53 +83,6 @@ app.use('/api', (req: any, res: any, next) => {
   next();
 });
 
-// Ensure support tables required by MCP flows
-async function ensureSupportTables(): Promise<void> {
-  await pool.query(`
-    CREATE TABLE IF NOT EXISTS call_attempts (
-      id SERIAL PRIMARY KEY,
-      senior_id INT NOT NULL REFERENCES seniors(id) ON DELETE CASCADE,
-      volunteer_id INT NOT NULL REFERENCES volunteers(id) ON DELETE CASCADE,
-      outcome TEXT NOT NULL,
-      notes TEXT,
-      created_at TIMESTAMPTZ DEFAULT NOW()
-    );
-
-    CREATE TABLE IF NOT EXISTS inbound_conversations (
-      id SERIAL PRIMARY KEY,
-      senior_id INT REFERENCES seniors(id) ON DELETE SET NULL,
-      caller_phone_number TEXT,
-      request_details TEXT,
-      matched_skill TEXT,
-      nearby_volunteers JSONB,
-      status TEXT DEFAULT 'OPEN',
-      scheduled_appointment_id INT REFERENCES appointments(id) ON DELETE SET NULL,
-      created_at TIMESTAMPTZ DEFAULT NOW(),
-      updated_at TIMESTAMPTZ DEFAULT NOW()
-    );
-
-    CREATE TABLE IF NOT EXISTS conversation_calls (
-      id SERIAL PRIMARY KEY,
-      conversation_id INT NOT NULL REFERENCES inbound_conversations(id) ON DELETE CASCADE,
-      volunteer_id INT NOT NULL REFERENCES volunteers(id) ON DELETE CASCADE,
-      outcome TEXT NOT NULL,
-      notes TEXT,
-      created_at TIMESTAMPTZ DEFAULT NOW()
-    );
-
-    -- Non-destructive schema evolutions for conversation_calls
-    DO $$ BEGIN
-      BEGIN
-        ALTER TABLE conversation_calls ADD COLUMN IF NOT EXISTS call_sid TEXT;
-      EXCEPTION WHEN duplicate_column THEN NULL; END;
-      BEGIN
-        ALTER TABLE conversation_calls ADD COLUMN IF NOT EXISTS role TEXT; -- VOLUNTEER | SENIOR_CALLBACK
-      EXCEPTION WHEN duplicate_column THEN NULL; END;
-    END $$;
-  `);
-}
-// ensureSupportTables().catch((e) => console.error('ensureSupportTables failed:', e));
-
 // Basic health
 app.get('/api/health', (_req, res) => {
   res.json({ ok: true });

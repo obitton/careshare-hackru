@@ -22,6 +22,8 @@ model Senior {
   updated_at      DateTime? @updatedAt
   emergency       EmergencyContact[]
   appointments    Appointment[]
+  call_attempts   CallAttempt[]
+  inbound_conversations InboundConversation[]
 }
 
 model Volunteer {
@@ -36,6 +38,8 @@ model Volunteer {
   is_active              Boolean   @default(true)
   created_at             DateTime  @default(now())
   appointments           Appointment[]
+  call_attempts          CallAttempt[]
+  conversation_calls     ConversationCall[]
 }
 
 model Appointment {
@@ -52,6 +56,7 @@ model Appointment {
   created_at            DateTime @default(now())
   senior                Senior   @relation(fields: [senior_id], references: [id])
   volunteer             Volunteer? @relation(fields: [volunteer_id], references: [id])
+  inbound_conversation  InboundConversation?
 }
 
 model EmergencyContact {
@@ -61,4 +66,47 @@ model EmergencyContact {
   phone_number String
   relationship String
   senior      Senior @relation(fields: [senior_id], references: [id])
+}
+
+model CallAttempt {
+  id           Int      @id @default(autoincrement())
+  senior_id    Int
+  volunteer_id Int
+  outcome      String
+  notes        String?
+  created_at   DateTime @default(now())
+
+  senior    Senior    @relation(fields: [senior_id], references: [id], onDelete: Cascade)
+  volunteer Volunteer @relation(fields: [volunteer_id], references: [id], onDelete: Cascade)
+}
+
+model InboundConversation {
+  id                       Int      @id @default(autoincrement())
+  senior_id                Int?
+  caller_phone_number      String?
+  request_details          String?
+  matched_skill            String?
+  nearby_volunteers        Json?
+  status                   String   @default("OPEN")
+  scheduled_appointment_id Int?     @unique
+  created_at               DateTime @default(now())
+  updated_at               DateTime @default(now()) @updatedAt
+
+  senior                Senior?           @relation(fields: [senior_id], references: [id], onDelete: SetNull)
+  scheduled_appointment Appointment?      @relation(fields: [scheduled_appointment_id], references: [id], onDelete: SetNull)
+  conversation_calls    ConversationCall[]
+}
+
+model ConversationCall {
+  id              Int      @id @default(autoincrement())
+  conversation_id Int
+  volunteer_id    Int
+  outcome         String
+  notes           String?
+  created_at      DateTime @default(now())
+  call_sid        String?
+  role            String? // VOLUNTEER | SENIOR_CALLBACK
+
+  conversation InboundConversation @relation(fields: [conversation_id], references: [id], onDelete: Cascade)
+  volunteer    Volunteer           @relation(fields: [volunteer_id], references: [id], onDelete: Cascade)
 }
