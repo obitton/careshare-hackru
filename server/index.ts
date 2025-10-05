@@ -84,8 +84,15 @@ app.use('/api', (req: any, res: any, next) => {
 });
 
 // Basic health
-app.get('/api/health', (_req, res) => {
-  res.json({ ok: true });
+app.get('/api/health', async (_req, res) => {
+  try {
+    // A simple, fast query to confirm DB connectivity
+    await pool.$queryRaw`SELECT 1`;
+    res.json({ ok: true, database: 'connected' });
+  } catch (e: any) {
+    console.error('[health] Health check failed:', e);
+    res.status(503).json({ ok: false, database: 'disconnected', error: e.message });
+  }
 });
 
 // Admin stats (UI parity)
@@ -876,10 +883,7 @@ app.post('/api/agent/personalization', async (req: any, res) => {
       systemMessage = `${systemMessage} ${extras.join(' ')}`.trim();
     }
 
-    const dynamic_variables: Record<string, any> = {
-      system_message: systemMessage,
-      first_message: firstMessage,
-    };
+    const dynamic_variables: Record<string, any> = {};
 
     const conversation_config_override = {
       agent: {
@@ -892,6 +896,7 @@ app.post('/api/agent/personalization', async (req: any, res) => {
     return res.status(200).json({
       type: 'conversation_initiation_client_data',
       dynamic_variables,
+      conversation_config_override,
     });
   } catch (e: any) {
     console.error('personalization webhook error:', e);
