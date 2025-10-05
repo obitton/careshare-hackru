@@ -242,7 +242,7 @@ app.post('/api/agent/find-and-parse', async (req, res) => {
     console.log(` -> Parsing request for skill: "${request_details}"`);
     const skillName = parseRequestForSkill(request_details);
     if (skillName) {
-      console.log(` -> Found skill: ${skillName}`);
+    console.log(` -> Found skill: ${skillName}`);
     } else {
       console.log(' -> No specific skill found, searching for all volunteers.');
     }
@@ -297,8 +297,8 @@ app.post('/api/agent/list-volunteers', async (req, res) => {
     res.status(200).json({ success: true, data: formatted });
   } catch (e: any) {
     if (e.message.includes('Invalid zip')) {
-      return res.status(200).json({ success: false, error: { code: 'INVALID_ZIP', message: 'Invalid zip provided' } });
-    }
+        return res.status(200).json({ success: false, error: { code: 'INVALID_ZIP', message: 'Invalid zip provided' } });
+      }
     console.error('list-volunteers error:', e);
     res.status(200).json({ success: false, error: { code: 'INTERNAL_ERROR', message: e.message } });
   }
@@ -425,7 +425,7 @@ app.post('/api/agent/start-inbound-conversation', async (req, res) => {
 
     const searchZip = d.zip ?? seniorRow?.zip_code ?? null;
     const radius = d.radius ?? 10;
-    
+
     let volunteers: any[] = [];
     if (searchZip && matchedSkill) {
       for (const r of [radius, radius + 5, radius + 10, radius + 15]) {
@@ -443,9 +443,9 @@ app.post('/api/agent/start-inbound-conversation', async (req, res) => {
             volunteers = vols.map(v => ({ ...v, skills: v.skills.map(s => s.skill.name) }));
             break;
           }
-        } catch {}
+          } catch {}
+        }
       }
-    }
     
     if (volunteers.length === 0 && searchZip) {
       try {
@@ -483,8 +483,8 @@ app.post('/api/agent/start-inbound-conversation', async (req, res) => {
     res.status(201).json({
       success: true, data: {
         conversation_id: insert.id,
-        senior: seniorRow,
-        matched_skill: matchedSkill,
+      senior: seniorRow,
+      matched_skill: matchedSkill,
         // No longer returning volunteers to the agent, backend is handling it
         message: `Found ${volunteers.length} volunteers. Outbound calls are being dispatched.`,
       }
@@ -819,8 +819,8 @@ app.post('/api/agent/personalization', async (req: any, res) => {
   if (!parsed.success) return res.status(200).json({ success: false, error: { code: 'INVALID_BODY', message: 'Invalid request body', details: parsed.error.issues } });
   const d = parsed.data;
   try {
-    // --- NEW STATEFUL LOGIC ---
-    // Check if this is a known outbound call by looking up the call_sid
+    // --- STATEFUL LOGIC REVERTED ---
+    // The call a lways comes in fresh, we determine context by looking up the call SID
     const callRecord = d.call_sid ? await prisma.conversationCall.findFirst({ where: { call_sid: d.call_sid } }) : null;
     
     let mode = 'INBOUND'; // Default to inbound
@@ -1003,13 +1003,38 @@ async function dispatchOutboundCall(conversation_id: number, volunteer_id: numbe
       return;
     }
 
+    // FINAL FIX: Dynamically build the prompt and first_message right here.
+    const conv = await prisma.inboundConversation.findUnique({ where: { id: conversation_id } });
+    if (!conv) {
+      console.error(`[XI] dispatchOutboundCall could not find conversation ${conversation_id}`);
+      return;
+    }
+    const senior = conv.senior_id ? await prisma.senior.findUnique({ where: { id: conv.senior_id } }) : null;
+    const seniorName = senior ? `${senior.first_name ?? ''} ${senior.last_name ?? ''}`.trim() : 'a senior';
+    
+    const systemMessage = [
+      'You are the CareShare assistant calling a volunteer.',
+      `You are calling on behalf of ${seniorName}.`,
+      `The specific request is: "${conv.request_details}".`,
+      'Your goal is to clearly explain the task and ask if they are available and willing to help. Be clear and concise.',
+      'You MUST record the result with logVolunteerCall before finishing.'
+    ].join(' ');
+    const firstMessage = `Hello, this is CareShare calling on behalf of ${seniorName} with a volunteer opportunity.`;
+
     const url = 'https://api.elevenlabs.io/v1/convai/twilio/outbound-call';
     const payload = {
       agent_id: agentId,
       agent_phone_number_id: phoneNumberId,
       to_number: dialNumber,
+      conversation_config_override: {
+        agent: {
+          prompt: { prompt: systemMessage },
+          first_message: firstMessage,
+          language: 'en',
+        },
+      },
     };
-    console.log('[XI] dispatchOutboundCall -> request', { url, payload: { ...payload, agent_id: '...' }, headers: { 'xi-api-key': `***${String(xiApiKey).slice(-4)}` } });
+    console.log('[XI] dispatchOutboundCall -> request', { url, payload: { ...payload, conversation_config_override: '...' }, headers: { 'xi-api-key': `***${String(xiApiKey).slice(-4)}` } });
 
     const response = await fetch(url, {
       method: 'POST',
