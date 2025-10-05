@@ -128,7 +128,7 @@ async function ensureSupportTables(): Promise<void> {
     END $$;
   `);
 }
-ensureSupportTables().catch((e) => console.error('ensureSupportTables failed:', e));
+// ensureSupportTables().catch((e) => console.error('ensureSupportTables failed:', e));
 
 // Basic health
 app.get('/api/health', (_req, res) => {
