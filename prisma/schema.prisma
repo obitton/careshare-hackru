@@ -8,63 +8,68 @@ datasource db {
 }
 
 model Senior {
-  id                      Int                       @id @default(autoincrement())
-  first_name              String
-  last_name               String
-  phone_number            String?
-  email                   String?
-  street_address          String?
-  city                    String?
-  state                   String?
-  zip_code                String?
-  is_active               Boolean?                  @default(true)
-  created_at              DateTime?                 @default(now())
-  updated_at              DateTime?                 @updatedAt
-  emergency_contacts      EmergencyContact[]
-  appointments            Appointment[]
-  call_attempts           CallAttempt[]
-  inbound_conversations   InboundConversation[]
-  accommodations          SeniorAccommodation[]
-  preferred_volunteers    SeniorPreferredVolunteer[]
+  id                   Int                        @id @default(autoincrement())
+  first_name           String
+  last_name            String
+  phone_number         String?
+  email                String?
+  street_address       String?
+  city                 String?
+  state                String?
+  zip_code             String?
+  is_active            Boolean?
+  created_at           DateTime?                  @db.Timestamptz
+  updated_at           DateTime?                  @db.Timestamptz
+  emergency_contacts   EmergencyContact[]
+  appointments         Appointment[]
+  call_attempts        CallAttempt[]
+  inbound_conversations InboundConversation[]
+  accommodations       SeniorAccommodation[]
+  preferred_volunteers SeniorPreferredVolunteer[]
+
+  @@map("seniors")
 }
 
 model Volunteer {
-  id                        Int                        @id @default(autoincrement())
-  first_name                String
-  last_name                 String
-  phone_number              String?
-  email                     String
-  bio                       String?
-  background_check_status   String?                    @default("Not Started")
-  availability_schedule     Json?
-  is_active                 Boolean?                   @default(true)
-  created_at                DateTime?                  @default(now())
-  zip_code                  String?
-  appointments              Appointment[]
-  call_attempts             CallAttempt[]
-  conversation_calls        ConversationCall[]
-  skills                    VolunteerSkill[]
-  preferred_by_seniors      SeniorPreferredVolunteer[]
+  id                      Int                        @id @default(autoincrement())
+  first_name              String
+  last_name               String
+  phone_number            String?
+  email                   String
+  bio                     String?
+  background_check_status String?
+  availability_schedule   Json?
+  is_active               Boolean?
+  created_at              DateTime?                  @db.Timestamptz
+  zip_code                String?
+  appointments            Appointment[]
+  call_attempts           CallAttempt[]
+  conversation_calls      ConversationCall[]
+  skills                  VolunteerSkill[]
+  preferred_by_seniors    SeniorPreferredVolunteer[]
+
+  @@map("volunteers")
 }
 
 model Appointment {
   id                      Int        @id @default(autoincrement())
   senior_id               Int
   volunteer_id            Int?
-  appointment_datetime    DateTime
+  appointment_datetime    DateTime   @db.Timestamptz
   duration_minutes        Int?
   location                String?
   status                  String
   notes_for_volunteer     String?
   feedback_from_senior    String?
   feedback_from_volunteer String?
-  created_at              DateTime?  @default(now())
+  created_at              DateTime?  @db.Timestamptz
   senior                  Senior     @relation(fields: [senior_id], references: [id])
   volunteer               Volunteer? @relation(fields: [volunteer_id], references: [id])
-  inbound_conversation    InboundConversation?
+  inbound_conversations   InboundConversation[]
 
   @@index([senior_id])
   @@index([volunteer_id])
+  @@map("appointments")
 }
 
 model EmergencyContact {
@@ -76,6 +81,7 @@ model EmergencyContact {
   senior       Senior @relation(fields: [senior_id], references: [id])
 
   @@index([senior_id])
+  @@map("emergency_contacts")
 }
 
 model CallAttempt {
@@ -84,12 +90,13 @@ model CallAttempt {
   volunteer_id Int
   outcome      String
   notes        String?
-  created_at   DateTime? @default(now())
-  senior       Senior    @relation(fields: [senior_id], references: [id], onDelete: Cascade)
-  volunteer    Volunteer @relation(fields: [volunteer_id], references: [id], onDelete: Cascade)
+  created_at   DateTime? @db.Timestamptz
+  senior       Senior    @relation(fields: [senior_id], references: [id])
+  volunteer    Volunteer @relation(fields: [volunteer_id], references: [id])
 
   @@index([senior_id])
   @@index([volunteer_id])
+  @@map("call_attempts")
 }
 
 model InboundConversation {
@@ -99,15 +106,16 @@ model InboundConversation {
   request_details          String?
   matched_skill            String?
   nearby_volunteers        Json?
-  status                   String?             @default("OPEN")
+  status                   String?
   scheduled_appointment_id Int?                @unique
-  created_at               DateTime?           @default(now())
-  updated_at               DateTime?           @updatedAt
-  senior                   Senior?             @relation(fields: [senior_id], references: [id], onDelete: SetNull)
-  scheduled_appointment    Appointment?        @relation(fields: [scheduled_appointment_id], references: [id], onDelete: SetNull)
+  created_at               DateTime?           @db.Timestamptz
+  updated_at               DateTime?           @db.Timestamptz
+  senior                   Senior?             @relation(fields: [senior_id], references: [id])
+  scheduled_appointment    Appointment?        @relation(fields: [scheduled_appointment_id], references: [id])
   conversation_calls       ConversationCall[]
 
   @@index([senior_id])
+  @@map("inbound_conversations")
 }
 
 model ConversationCall {
@@ -116,14 +124,15 @@ model ConversationCall {
   volunteer_id    Int
   outcome         String
   notes           String?
-  created_at      DateTime?           @default(now())
+  created_at      DateTime?           @db.Timestamptz
   call_sid        String?
   role            String?
-  conversation    InboundConversation @relation(fields: [conversation_id], references: [id], onDelete: Cascade)
-  volunteer       Volunteer           @relation(fields: [volunteer_id], references: [id], onDelete: Cascade)
+  conversation    InboundConversation @relation(fields: [conversation_id], references: [id])
+  volunteer       Volunteer           @relation(fields: [volunteer_id], references: [id])
 
   @@index([conversation_id])
   @@index([volunteer_id])
+  @@map("conversation_calls")
 }
 
 model Accommodation {
@@ -131,31 +140,37 @@ model Accommodation {
   name        String
   description String?
   seniors     SeniorAccommodation[]
+
+  @@map("accommodations")
 }
 
 model SeniorAccommodation {
-  senior_id        BigInt
+  senior_id        Int
   accommodation_id BigInt
   senior           Senior        @relation(fields: [senior_id], references: [id])
   accommodation    Accommodation @relation(fields: [accommodation_id], references: [id])
 
   @@id([senior_id, accommodation_id])
+  @@map("senior_accommodations")
 }
 
 model SeniorPreferredVolunteer {
-  senior_id    BigInt
-  volunteer_id BigInt
+  senior_id    Int
+  volunteer_id Int
   notes        String?
   senior       Senior    @relation(fields: [senior_id], references: [id])
   volunteer    Volunteer @relation(fields: [volunteer_id], references: [id])
 
   @@id([senior_id, volunteer_id])
+  @@map("senior_preferred_volunteers")
 }
 
 model Skill {
   id         Int              @id @default(autoincrement())
   name       String           @unique
   volunteers VolunteerSkill[]
+
+  @@map("skills")
 }
 
 model VolunteerSkill {
@@ -165,4 +180,5 @@ model VolunteerSkill {
   skill        Skill     @relation(fields: [skill_id], references: [id])
 
   @@id([volunteer_id, skill_id])
+  @@map("volunteer_skills")
 }
