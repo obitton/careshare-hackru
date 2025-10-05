@@ -1,3 +1,7 @@
+-- This is an empty migration.
+-- Drop all existing tables to start fresh
+DROP TABLE IF EXISTS "Senior", "Volunteer", "Appointment", "EmergencyContact", "CallAttempt", "InboundConversation", "ConversationCall", "Accommodation", "SeniorAccommodation", "SeniorPreferredVolunteer", "Skill", "VolunteerSkill", "_prisma_migrations" CASCADE;
+
 -- CreateTable
 CREATE TABLE "Senior" (
     "id" SERIAL NOT NULL,
@@ -9,8 +13,8 @@ CREATE TABLE "Senior" (
     "city" TEXT,
     "state" TEXT,
     "zip_code" TEXT,
-    "is_active" BOOLEAN NOT NULL DEFAULT true,
-    "created_at" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    "is_active" BOOLEAN DEFAULT true,
+    "created_at" TIMESTAMP(3) DEFAULT CURRENT_TIMESTAMP,
     "updated_at" TIMESTAMP(3),
 
     CONSTRAINT "Senior_pkey" PRIMARY KEY ("id")
@@ -24,10 +28,11 @@ CREATE TABLE "Volunteer" (
     "phone_number" TEXT,
     "email" TEXT NOT NULL,
     "bio" TEXT,
-    "background_check_status" TEXT NOT NULL DEFAULT 'Not Started',
+    "background_check_status" TEXT DEFAULT 'Not Started',
     "availability_schedule" JSONB,
-    "is_active" BOOLEAN NOT NULL DEFAULT true,
-    "created_at" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    "is_active" BOOLEAN DEFAULT true,
+    "created_at" TIMESTAMP(3) DEFAULT CURRENT_TIMESTAMP,
+    "zip_code" TEXT,
 
     CONSTRAINT "Volunteer_pkey" PRIMARY KEY ("id")
 );
@@ -44,7 +49,7 @@ CREATE TABLE "Appointment" (
     "notes_for_volunteer" TEXT,
     "feedback_from_senior" TEXT,
     "feedback_from_volunteer" TEXT,
-    "created_at" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    "created_at" TIMESTAMP(3) DEFAULT CURRENT_TIMESTAMP,
 
     CONSTRAINT "Appointment_pkey" PRIMARY KEY ("id")
 );
@@ -67,7 +72,7 @@ CREATE TABLE "CallAttempt" (
     "volunteer_id" INTEGER NOT NULL,
     "outcome" TEXT NOT NULL,
     "notes" TEXT,
-    "created_at" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    "created_at" TIMESTAMP(3) DEFAULT CURRENT_TIMESTAMP,
 
     CONSTRAINT "CallAttempt_pkey" PRIMARY KEY ("id")
 );
@@ -80,10 +85,10 @@ CREATE TABLE "InboundConversation" (
     "request_details" TEXT,
     "matched_skill" TEXT,
     "nearby_volunteers" JSONB,
-    "status" TEXT NOT NULL DEFAULT 'OPEN',
+    "status" TEXT DEFAULT 'OPEN',
     "scheduled_appointment_id" INTEGER,
-    "created_at" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    "updated_at" TIMESTAMP(3) NOT NULL,
+    "created_at" TIMESTAMP(3) DEFAULT CURRENT_TIMESTAMP,
+    "updated_at" TIMESTAMP(3),
 
     CONSTRAINT "InboundConversation_pkey" PRIMARY KEY ("id")
 );
@@ -95,15 +100,60 @@ CREATE TABLE "ConversationCall" (
     "volunteer_id" INTEGER NOT NULL,
     "outcome" TEXT NOT NULL,
     "notes" TEXT,
-    "created_at" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    "created_at" TIMESTAMP(3) DEFAULT CURRENT_TIMESTAMP,
     "call_sid" TEXT,
     "role" TEXT,
 
     CONSTRAINT "ConversationCall_pkey" PRIMARY KEY ("id")
 );
 
+-- CreateTable
+CREATE TABLE "Accommodation" (
+    "id" BIGSERIAL NOT NULL,
+    "name" TEXT NOT NULL,
+    "description" TEXT,
+
+    CONSTRAINT "Accommodation_pkey" PRIMARY KEY ("id")
+);
+
+-- CreateTable
+CREATE TABLE "SeniorAccommodation" (
+    "senior_id" BIGINT NOT NULL,
+    "accommodation_id" BIGINT NOT NULL,
+
+    CONSTRAINT "SeniorAccommodation_pkey" PRIMARY KEY ("senior_id","accommodation_id")
+);
+
+-- CreateTable
+CREATE TABLE "SeniorPreferredVolunteer" (
+    "senior_id" BIGINT NOT NULL,
+    "volunteer_id" BIGINT NOT NULL,
+    "notes" TEXT,
+
+    CONSTRAINT "SeniorPreferredVolunteer_pkey" PRIMARY KEY ("senior_id","volunteer_id")
+);
+
+-- CreateTable
+CREATE TABLE "Skill" (
+    "id" SERIAL NOT NULL,
+    "name" TEXT NOT NULL,
+
+    CONSTRAINT "Skill_pkey" PRIMARY KEY ("id")
+);
+
+-- CreateTable
+CREATE TABLE "VolunteerSkill" (
+    "volunteer_id" INTEGER NOT NULL,
+    "skill_id" INTEGER NOT NULL,
+
+    CONSTRAINT "VolunteerSkill_pkey" PRIMARY KEY ("volunteer_id","skill_id")
+);
+
 -- CreateIndex
 CREATE UNIQUE INDEX "InboundConversation_scheduled_appointment_id_key" ON "InboundConversation"("scheduled_appointment_id");
+
+-- CreateIndex
+CREATE UNIQUE INDEX "Skill_name_key" ON "Skill"("name");
 
 -- AddForeignKey
 ALTER TABLE "Appointment" ADD CONSTRAINT "Appointment_senior_id_fkey" FOREIGN KEY ("senior_id") REFERENCES "Senior"("id") ON DELETE RESTRICT ON UPDATE CASCADE;
@@ -132,26 +182,20 @@ ALTER TABLE "ConversationCall" ADD CONSTRAINT "ConversationCall_conversation_id_
 -- AddForeignKey
 ALTER TABLE "ConversationCall" ADD CONSTRAINT "ConversationCall_volunteer_id_fkey" FOREIGN KEY ("volunteer_id") REFERENCES "Volunteer"("id") ON DELETE CASCADE ON UPDATE CASCADE;
 
--- CreateIndex
-CREATE INDEX "Appointment_senior_id_idx" ON "Appointment"("senior_id");
+-- AddForeignKey
+ALTER TABLE "SeniorAccommodation" ADD CONSTRAINT "SeniorAccommodation_senior_id_fkey" FOREIGN KEY ("senior_id") REFERENCES "Senior"("id") ON DELETE RESTRICT ON UPDATE CASCADE;
 
--- CreateIndex
-CREATE INDEX "Appointment_volunteer_id_idx" ON "Appointment"("volunteer_id");
+-- AddForeignKey
+ALTER TABLE "SeniorAccommodation" ADD CONSTRAINT "SeniorAccommodation_accommodation_id_fkey" FOREIGN KEY ("accommodation_id") REFERENCES "Accommodation"("id") ON DELETE RESTRICT ON UPDATE CASCADE;
 
--- CreateIndex
-CREATE INDEX "EmergencyContact_senior_id_idx" ON "EmergencyContact"("senior_id");
+-- AddForeignKey
+ALTER TABLE "SeniorPreferredVolunteer" ADD CONSTRAINT "SeniorPreferredVolunteer_senior_id_fkey" FOREIGN KEY ("senior_id") REFERENCES "Senior"("id") ON DELETE RESTRICT ON UPDATE CASCADE;
 
--- CreateIndex
-CREATE INDEX "CallAttempt_senior_id_idx" ON "CallAttempt"("senior_id");
+-- AddForeignKey
+ALTER TABLE "SeniorPreferredVolunteer" ADD CONSTRAINT "SeniorPreferredVolunteer_volunteer_id_fkey" FOREIGN KEY ("volunteer_id") REFERENCES "Volunteer"("id") ON DELETE RESTRICT ON UPDATE CASCADE;
 
--- CreateIndex
-CREATE INDEX "CallAttempt_volunteer_id_idx" ON "CallAttempt"("volunteer_id");
+-- AddForeignKey
+ALTER TABLE "VolunteerSkill" ADD CONSTRAINT "VolunteerSkill_volunteer_id_fkey" FOREIGN KEY ("volunteer_id") REFERENCES "Volunteer"("id") ON DELETE RESTRICT ON UPDATE CASCADE;
 
--- CreateIndex
-CREATE INDEX "InboundConversation_senior_id_idx" ON "InboundConversation"("senior_id");
-
--- CreateIndex
-CREATE INDEX "ConversationCall_conversation_id_idx" ON "ConversationCall"("conversation_id");
-
--- CreateIndex
-CREATE INDEX "ConversationCall_volunteer_id_idx" ON "ConversationCall"("volunteer_id");
+-- AddForeignKey
+ALTER TABLE "VolunteerSkill" ADD CONSTRAINT "VolunteerSkill_skill_id_fkey" FOREIGN KEY ("skill_id") REFERENCES "Skill"("id") ON DELETE RESTRICT ON UPDATE CASCADE;

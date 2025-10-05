@@ -8,118 +8,161 @@ datasource db {
 }
 
 model Senior {
-  id              Int       @id @default(autoincrement())
-  first_name      String
-  last_name       String
-  phone_number    String?
-  email           String?
-  street_address  String?
-  city            String?
-  state           String?
-  zip_code        String?
-  is_active       Boolean   @default(true)
-  created_at      DateTime  @default(now())
-  updated_at      DateTime? @updatedAt
-  emergency       EmergencyContact[]
-  appointments    Appointment[]
-  call_attempts   CallAttempt[]
-  inbound_conversations InboundConversation[]
+  id                      Int                       @id @default(autoincrement())
+  first_name              String
+  last_name               String
+  phone_number            String?
+  email                   String?
+  street_address          String?
+  city                    String?
+  state                   String?
+  zip_code                String?
+  is_active               Boolean?                  @default(true)
+  created_at              DateTime?                 @default(now())
+  updated_at              DateTime?                 @updatedAt
+  emergency_contacts      EmergencyContact[]
+  appointments            Appointment[]
+  call_attempts           CallAttempt[]
+  inbound_conversations   InboundConversation[]
+  accommodations          SeniorAccommodation[]
+  preferred_volunteers    SeniorPreferredVolunteer[]
 }
 
 model Volunteer {
-  id                     Int       @id @default(autoincrement())
-  first_name             String
-  last_name              String
-  phone_number           String?
-  email                  String
-  bio                    String?
-  background_check_status String    @default("Not Started")
-  availability_schedule  Json?
-  is_active              Boolean   @default(true)
-  created_at             DateTime  @default(now())
-  appointments           Appointment[]
-  call_attempts          CallAttempt[]
-  conversation_calls     ConversationCall[]
+  id                        Int                        @id @default(autoincrement())
+  first_name                String
+  last_name                 String
+  phone_number              String?
+  email                     String
+  bio                       String?
+  background_check_status   String?                    @default("Not Started")
+  availability_schedule     Json?
+  is_active                 Boolean?                   @default(true)
+  created_at                DateTime?                  @default(now())
+  zip_code                  String?
+  appointments              Appointment[]
+  call_attempts             CallAttempt[]
+  conversation_calls        ConversationCall[]
+  skills                    VolunteerSkill[]
+  preferred_by_seniors      SeniorPreferredVolunteer[]
 }
 
 model Appointment {
-  id                    Int       @id @default(autoincrement())
-  senior_id             Int
-  volunteer_id          Int?
-  appointment_datetime  DateTime
-  duration_minutes      Int?
-  location              String?
-  status                String
-  notes_for_volunteer   String?
-  feedback_from_senior  String?
+  id                      Int        @id @default(autoincrement())
+  senior_id               Int
+  volunteer_id            Int?
+  appointment_datetime    DateTime
+  duration_minutes        Int?
+  location                String?
+  status                  String
+  notes_for_volunteer     String?
+  feedback_from_senior    String?
   feedback_from_volunteer String?
-  created_at            DateTime @default(now())
-  senior                Senior   @relation(fields: [senior_id], references: [id])
-  volunteer             Volunteer? @relation(fields: [volunteer_id], references: [id])
-  inbound_conversation  InboundConversation?
+  created_at              DateTime?  @default(now())
+  senior                  Senior     @relation(fields: [senior_id], references: [id])
+  volunteer               Volunteer? @relation(fields: [volunteer_id], references: [id])
+  inbound_conversation    InboundConversation?
 
   @@index([senior_id])
   @@index([volunteer_id])
 }
 
 model EmergencyContact {
-  id          Int     @id @default(autoincrement())
-  senior_id   Int
-  full_name   String
+  id           Int    @id @default(autoincrement())
+  senior_id    Int
+  full_name    String
   phone_number String
   relationship String
-  senior      Senior @relation(fields: [senior_id], references: [id])
+  senior       Senior @relation(fields: [senior_id], references: [id])
 
   @@index([senior_id])
 }
 
 model CallAttempt {
-  id           Int      @id @default(autoincrement())
+  id           Int       @id @default(autoincrement())
   senior_id    Int
   volunteer_id Int
   outcome      String
   notes        String?
-  created_at   DateTime @default(now())
-
-  senior    Senior    @relation(fields: [senior_id], references: [id], onDelete: Cascade)
-  volunteer Volunteer @relation(fields: [volunteer_id], references: [id], onDelete: Cascade)
+  created_at   DateTime? @default(now())
+  senior       Senior    @relation(fields: [senior_id], references: [id], onDelete: Cascade)
+  volunteer    Volunteer @relation(fields: [volunteer_id], references: [id], onDelete: Cascade)
 
   @@index([senior_id])
   @@index([volunteer_id])
 }
 
 model InboundConversation {
-  id                       Int      @id @default(autoincrement())
+  id                       Int                 @id @default(autoincrement())
   senior_id                Int?
   caller_phone_number      String?
   request_details          String?
   matched_skill            String?
   nearby_volunteers        Json?
-  status                   String   @default("OPEN")
-  scheduled_appointment_id Int?     @unique
-  created_at               DateTime @default(now())
-  updated_at               DateTime @default(now()) @updatedAt
-
-  senior                Senior?           @relation(fields: [senior_id], references: [id], onDelete: SetNull)
-  scheduled_appointment Appointment?      @relation(fields: [scheduled_appointment_id], references: [id], onDelete: SetNull)
-  conversation_calls    ConversationCall[]
+  status                   String?             @default("OPEN")
+  scheduled_appointment_id Int?                @unique
+  created_at               DateTime?           @default(now())
+  updated_at               DateTime?           @updatedAt
+  senior                   Senior?             @relation(fields: [senior_id], references: [id], onDelete: SetNull)
+  scheduled_appointment    Appointment?        @relation(fields: [scheduled_appointment_id], references: [id], onDelete: SetNull)
+  conversation_calls       ConversationCall[]
 
   @@index([senior_id])
 }
 
 model ConversationCall {
-  id              Int      @id @default(autoincrement())
+  id              Int                 @id @default(autoincrement())
   conversation_id Int
   volunteer_id    Int
   outcome         String
   notes           String?
-  created_at      DateTime @default(now())
+  created_at      DateTime?           @default(now())
   call_sid        String?
-  role            String? // VOLUNTEER | SENIOR_CALLBACK
-
-  conversation InboundConversation @relation(fields: [conversation_id], references: [id], onDelete: Cascade)
-  volunteer    Volunteer           @relation(fields: [volunteer_id], references: [id], onDelete: Cascade)
+  role            String?
+  conversation    InboundConversation @relation(fields: [conversation_id], references: [id], onDelete: Cascade)
+  volunteer       Volunteer           @relation(fields: [volunteer_id], references: [id], onDelete: Cascade)
 
   @@index([conversation_id])
   @@index([volunteer_id])
+}
+
+model Accommodation {
+  id          BigInt                @id @default(autoincrement())
+  name        String
+  description String?
+  seniors     SeniorAccommodation[]
+}
+
+model SeniorAccommodation {
+  senior_id        BigInt
+  accommodation_id BigInt
+  senior           Senior        @relation(fields: [senior_id], references: [id])
+  accommodation    Accommodation @relation(fields: [accommodation_id], references: [id])
+
+  @@id([senior_id, accommodation_id])
+}
+
+model SeniorPreferredVolunteer {
+  senior_id    BigInt
+  volunteer_id BigInt
+  notes        String?
+  senior       Senior    @relation(fields: [senior_id], references: [id])
+  volunteer    Volunteer @relation(fields: [volunteer_id], references: [id])
+
+  @@id([senior_id, volunteer_id])
+}
+
+model Skill {
+  id         Int              @id @default(autoincrement())
+  name       String           @unique
+  volunteers VolunteerSkill[]
+}
+
+model VolunteerSkill {
+  volunteer_id Int
+  skill_id     Int
+  volunteer    Volunteer @relation(fields: [volunteer_id], references: [id])
+  skill        Skill     @relation(fields: [skill_id], references: [id])
+
+  @@id([volunteer_id, skill_id])
 }
