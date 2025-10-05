@@ -1,0 +1,10 @@
+/* Minimal base styles to pair with Tailwind CDN classes in index.html */
+html, body, #root {
+  height: 100%;
+}
+
+body {
+  margin: 0;
+}
+
+

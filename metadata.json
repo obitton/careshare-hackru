@@ -1,0 +1,5 @@
+{
+  "name": "CareShare - Senior & Volunteer Matching",
+  "description": "A web application platform designed to connect seniors with volunteers for appointments and assistance. It features separate portals for seniors, volunteers, and administrators to manage requests, schedules, and platform operations.",
+  "requestFramePermissions": []
+}

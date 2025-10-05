@@ -1,0 +1,39 @@
+{
+  "name": "careshare---senior-&-volunteer-matching",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview",
+    "start:server": "npx tsx -r dotenv/config server/index.ts",
+    "server:dev": "npx tsx -r dotenv/config server/index.ts",
+    "db:seed": "node server/seed.mjs"
+  },
+  "dependencies": {
+    "@prisma/client": "^6.16.3",
+    "@types/react-router-dom": "^5.3.3",
+    "dotenv": "^17.2.3",
+    "express": "^5.1.0",
+    "libphonenumber-js": "^1.12.23",
+    "ngrok": "^5.0.0-beta.2",
+    "pg": "^8.16.3",
+    "react": "^19.2.0",
+    "react-dom": "^19.2.0",
+    "react-router-dom": "^6.30.1",
+    "zipcodes": "^8.0.0",
+    "zod": "^4.1.11"
+  },
+  "devDependencies": {
+    "@types/express": "^5.0.3",
+    "@types/node": "^22.14.0",
+    "@types/pg": "^8.15.5",
+    "@vitejs/plugin-react": "^5.0.0",
+    "nodemon": "^3.1.10",
+    "prisma": "^6.16.3",
+    "ts-node": "^10.9.2",
+    "typescript": "~5.8.2",
+    "vite": "^6.2.0"
+  }
+}

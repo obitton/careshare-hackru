@@ -1,0 +1,64 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model Senior {
+  id              Int       @id @default(autoincrement())
+  first_name      String
+  last_name       String
+  phone_number    String?
+  email           String?
+  street_address  String?
+  city            String?
+  state           String?
+  zip_code        String?
+  is_active       Boolean   @default(true)
+  created_at      DateTime  @default(now())
+  updated_at      DateTime? @updatedAt
+  emergency       EmergencyContact[]
+  appointments    Appointment[]
+}
+
+model Volunteer {
+  id                     Int       @id @default(autoincrement())
+  first_name             String
+  last_name              String
+  phone_number           String?
+  email                  String
+  bio                    String?
+  background_check_status String    @default("Not Started")
+  availability_schedule  Json?
+  is_active              Boolean   @default(true)
+  created_at             DateTime  @default(now())
+  appointments           Appointment[]
+}
+
+model Appointment {
+  id                    Int       @id @default(autoincrement())
+  senior_id             Int
+  volunteer_id          Int?
+  appointment_datetime  DateTime
+  duration_minutes      Int?
+  location              String?
+  status                String
+  notes_for_volunteer   String?
+  feedback_from_senior  String?
+  feedback_from_volunteer String?
+  created_at            DateTime @default(now())
+  senior                Senior   @relation(fields: [senior_id], references: [id])
+  volunteer             Volunteer? @relation(fields: [volunteer_id], references: [id])
+}
+
+model EmergencyContact {
+  id          Int     @id @default(autoincrement())
+  senior_id   Int
+  full_name   String
+  phone_number String
+  relationship String
+  senior      Senior @relation(fields: [senior_id], references: [id])
+}
