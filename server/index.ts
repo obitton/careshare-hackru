@@ -950,7 +950,7 @@ app.post('/api/agent/personalization', async (req: any, res) => {
       ].join(' '),
     };
     const modeFirstMessages: Record<string, string> = {
-      INBOUND: 'Hello! How can I help you today?',
+      INBOUND: 'Thank you for calling CareShare! I\'m Fibi! What can I help you with today?',
       VOLUNTEER_OUTBOUND: 'Hello, this is CareShare calling on behalf of a senior in your community.',
       SENIOR_CALLBACK: 'Hello again, this is CareShare. I have some options for you.',
     };
